@@ -1,0 +1,72 @@
+name: Deploy static site to VPS
+
+# Reusable workflow. Callers pass their domain + webroot; the two Tailscale
+# OAuth secrets are inherited. The VPS connection constants below are the same
+# for every hostettler.io static site, so they live here once (not as secrets).
+on:
+  workflow_call:
+    inputs:
+      domain:
+        description: Public domain, e.g. move.hostettler.io
+        required: true
+        type: string
+      deploy_path:
+        description: Absolute webroot on the VPS, e.g. /var/www/move.hostettler.io
+        required: true
+        type: string
+    secrets:
+      TS_OAUTH_CLIENT_ID:
+        required: true
+      TS_OAUTH_SECRET:
+        required: true
+
+concurrency:
+  group: deploy-${{ inputs.domain }}
+  cancel-in-progress: true
+
+env:
+  TS_HOSTNAME: 100.102.93.2
+  SSH_USERNAME: dp-ubuntu-16gb
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.domain }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: production
+      url: https://${{ inputs.domain }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # /assets is served immutable + long max-age with stable filenames, so
+      # append the commit SHA to every local assets/* URL in the shipped HTML;
+      # each change becomes a fresh Cloudflare cache key. Repo refs stay clean.
+      - name: Cache-bust asset URLs with commit SHA
+        run: |
+          export V="${GITHUB_SHA:0:8}"
+          find . -name '*.html' -not -path './.git/*' -print0 | xargs -0 \
+            perl -pi -e 's{(href|src)="((?:\.\./)?assets/[^"?]+\.(?:css|js|png|jpe?g|svg|webp|ico))(?:\?v=[^"]*)?"}{$1.qq{="$2?v=$ENV{V}"}}ge'
+          echo "Cache-busted asset URLs to ?v=$V:"; grep -rho 'assets/[^"]*' --include='*.html' . | sort -u
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:prod-hetzner
+
+      - name: Rsync site to VPS
+        run: |
+          ssh -o StrictHostKeyChecking=no \
+            "${SSH_USERNAME}@${TS_HOSTNAME}" \
+            "mkdir -p '${{ inputs.deploy_path }}'"
+          rsync -az --delete \
+            -e "ssh -o StrictHostKeyChecking=no" \
+            --exclude '.git' --exclude '.github' --exclude 'docs' --exclude 'README.md' \
+            ./ "${SSH_USERNAME}@${TS_HOSTNAME}:${{ inputs.deploy_path }}/"
+
+      - name: Verify
+        run: |
+          curl -fsS -o /dev/null -w 'home %{http_code}\n' "https://${{ inputs.domain }}/" \
+            || echo "not reachable yet (DNS/TLS pending?)"
