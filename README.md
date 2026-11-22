@@ -66,6 +66,13 @@ Repos currently enrolled: biergit-v2, deploy-actions, go-web,
 hostettler-auth, loore-8053, luna-eats, move, personal-website, silent-sync,
 trading-platform, zueri-radar.
 
+**Public repos keep a copy.** Mend's hosted Renovate won't let a public repo
+read a preset from this private repo; the run fails with "Cannot find preset's
+package". So **go-web** and **personal-website** carry a copy of the policy
+in their own `.github/renovate.json5`, with private repo names removed from
+the comments. When you change `renovate/default.json5`, mirror the change in
+both. A new public repo needs a copy too, not the two-line `extends`.
+
 ## One-time setup
 
 This is a **private** repo, so its reusable workflow is callable from other
