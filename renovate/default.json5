@@ -4,7 +4,11 @@
 //   { "extends": ["local>lucahost/deploy-actions//renovate/default.json5"] }
 //
 // Renovate reads this file from the default branch (main), so a change here
-// reaches every repo on its next run. No per-repo copy needs updating.
+// reaches every private repo on its next run.
+//
+// EXCEPTION: public repos (go-web, personal-website). Mend's hosted Renovate
+// won't let a public repo read a preset from this private repo, so they carry
+// a copy in their own .github/renovate.json5. Mirror every change there.
 //
 // Policy: every merge to a repo's default branch deploys to prod, so nothing
 // automerges. Updates arrive as PRs in one weekly batch and you merge them.
