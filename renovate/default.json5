@@ -1,0 +1,81 @@
+// Shared Renovate preset for the lucahost repos deployed to the Hetzner VPS.
+//
+// Each repo opts in with a two-line .github/renovate.json:
+//   { "extends": ["local>lucahost/deploy-actions//renovate/default.json5"] }
+//
+// Renovate reads this file from the default branch (main), so a change here
+// reaches every repo on its next run. No per-repo copy needs updating.
+//
+// Policy: every merge to a repo's default branch deploys to prod, so nothing
+// automerges. Updates arrive as PRs in one weekly batch and you merge them.
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  description: 'lucahost VPS repos: weekly batch, PRs only, no automerge',
+  extends: [
+    'config:recommended',
+    ':timezone(Europe/Zurich)',
+    // Opens a PR when Renovate renames or deprecates an option used here.
+    ':configMigration',
+  ],
+
+  // Monday before 08:00 Zurich time. The window is wide on purpose: the hosted
+  // Mend app only runs each repo every few hours, and a narrow window can be
+  // missed entirely. Security fixes ignore the schedule.
+  schedule: ['* 0-7 * * 1'],
+  // config:recommended caps branch creation at 2 PRs/hour. With a weekly
+  // window that pushes PRs into the next week, so the cap is lifted;
+  // grouping and prConcurrentLimit (10) keep the batch reviewable.
+  prHourlyLimit: 0,
+  automerge: false,
+  labels: ['dependencies'],
+
+  // GitHub (Dependabot) alerts plus the OSV database, so private repos with
+  // Dependabot alerts turned off still get security PRs.
+  osvVulnerabilityAlerts: true,
+  vulnerabilityAlerts: {
+    labels: ['dependencies', 'security'],
+  },
+
+  // Monthly lockfile refresh for transitive deps that no direct bump touches.
+  lockFileMaintenance: {
+    enabled: true,
+    schedule: ['* 0-7 1 * *'],
+  },
+
+  packageRules: [
+    {
+      // Supply-chain buffer: wait 3 days before proposing a new registry
+      // release, so a hijacked or yanked version is usually pulled first.
+      // 'strict' means no branch or PR exists until the age has passed.
+      // Docker is excluded because not every registry publishes timestamps,
+      // and a timestamp-less release would be held back forever.
+      description: 'Hold npm/PyPI/NuGet releases for 3 days',
+      matchDatasources: ['npm', 'pypi', 'nuget'],
+      minimumReleaseAge: '3 days',
+      internalChecksFilter: 'strict',
+    },
+    {
+      // Postgres 16 -> 17 needs pg_upgrade or dump/restore, and a Redis
+      // major can change persistence formats. These are never a routine
+      // merge, so majors wait until you tick them on the Dependency Dashboard.
+      description: 'Stateful images: majors need dashboard approval',
+      matchDatasources: ['docker'],
+      matchPackageNames: ['postgres', 'postgis/postgis', 'timescale/timescaledb', 'redis'],
+      matchUpdateTypes: ['major'],
+      dependencyDashboardApproval: true,
+    },
+    {
+      // Compose files reference images this org builds (zueri-radar-api:latest,
+      // ghcr.io/lucahost/...:latest). Floating tags have no version to bump,
+      // and the local names don't exist on Docker Hub.
+      description: 'Skip floating :latest/:dev image tags',
+      matchDatasources: ['docker'],
+      matchCurrentValue: '/^(latest|dev)$/',
+      enabled: false,
+    },
+
+    // TODO(luca): grouping strategy, see the PR description / chat for the trade-offs.
+    // Without rules here, Renovate opens one PR per package (monorepos such as
+    // dotnet/* or @tanstack/* are already grouped by config:recommended).
+  ],
+}

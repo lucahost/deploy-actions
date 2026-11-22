@@ -30,6 +30,42 @@ Sets `TS_OAUTH_CLIENT_ID` + `TS_OAUTH_SECRET` on a new site repo in one run:
 ./scripts/bootstrap-secrets.sh lucahost/<repo>
 ```
 
+## `renovate/default.json5` (shared Renovate preset)
+
+Dependency updates for every repo that deploys to the VPS, run by the hosted
+[Mend Renovate app](https://github.com/apps/renovate). Each repo opts in with
+a two-line `.github/renovate.json`:
+
+```json
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["local>lucahost/deploy-actions//renovate/default.json5"]
+}
+```
+
+Policy, in short: every merge deploys to prod, so **nothing automerges**.
+Updates arrive as PRs in a weekly batch (Monday before 08:00 Europe/Zurich).
+Security fixes skip the schedule. npm, PyPI and NuGet releases wait 3 days
+before a PR opens. Postgres and Redis majors wait for a tick on each repo's
+Dependency Dashboard issue. The comments in the preset explain the
+reasoning for each rule.
+
+Renovate reads the preset from `main` on every run, so editing it changes all
+repos at once. Check changes before merging:
+
+```bash
+npx --package renovate -- renovate-config-validator --strict --no-global renovate/default.json5
+```
+
+**Adding a repo:** commit the `.github/renovate.json` above, then add the repo
+to the app's repository list (GitHub → Settings → Applications → Renovate →
+Configure). The config must reach the default branch before the app first
+sees the repo; otherwise Renovate opens its own "Configure Renovate" PR.
+
+Repos currently enrolled: biergit-v2, deploy-actions, go-web,
+hostettler-auth, loore-8053, luna-eats, move, personal-website, silent-sync,
+trading-platform, zueri-radar.
+
 ## One-time setup
 
 This is a **private** repo, so its reusable workflow is callable from other
