@@ -37,7 +37,7 @@ jobs:
       name: production
       url: https://${{ inputs.domain }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # /assets is served immutable + long max-age with stable filenames, so
       # append the commit SHA to every local assets/* URL in the shipped HTML;
