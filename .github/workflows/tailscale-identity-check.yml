@@ -69,26 +69,42 @@ jobs:
           audience: ${{ needs.identity.outputs.audience }}
           tags: tag:ci-deploy
 
+  # A refusal counts only with proof: Tailscale's own answer (status 403, "Unauthorized") in the
+  # attempt's log, read through the API once the attempt's job has finished; or, for own-workflow
+  # dispatched from a branch, GitHub refusing Environment vps before any step ran. A join error
+  # of any other kind (network, the action itself) is no verdict and fails.
   verdict:
     needs: [no-environment, own-workflow]
     if: always()
     runs-on: ubuntu-24.04
+    permissions:
+      actions: read
     steps:
       - env:
-          NO_ENV_JOINED: ${{ needs.no-environment.outputs.joined }}
-          NO_ENV_RESULT: ${{ needs.no-environment.result }}
-          OWN_JOINED: ${{ needs.own-workflow.outputs.joined }}
-          OWN_RESULT: ${{ needs.own-workflow.result }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN: ${{ github.run_id }}
           REF: ${{ github.ref }}
+          NO_ENV_JOINED: ${{ needs.no-environment.outputs.joined }}
+          OWN_JOINED: ${{ needs.own-workflow.outputs.joined }}
         run: |
           echo "ref $REF"
+          api() { curl -fsSL --max-time 30 -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/$1"; }
+          jobs=$(api "actions/runs/$RUN/jobs?per_page=100")
           bad=0
-          # joined=true: Tailscale let it in. A job GitHub refused before any step (Environment
-          # vps from a branch) has result failure and no output: also refused.
-          for r in "no-environment|$NO_ENV_JOINED|$NO_ENV_RESULT" "own-workflow|$OWN_JOINED|$OWN_RESULT"; do
-            IFS='|' read -r name joined result <<<"$r"
-            if [ "$joined" = true ]; then echo "::error::$name JOINED the tailnet"; bad=1
-            elif [ "$joined" = false ] || [ "$result" = failure ]; then echo "refused, as it must be: $name (job $result)"
-            else echo "::error::$name: no verdict (job $result)"; bad=1; fi
+          for r in "no-environment|$NO_ENV_JOINED" "own-workflow|$OWN_JOINED"; do
+            IFS='|' read -r name joined <<<"$r"
+            id=$(jq -r --arg n "$name" '.jobs[] | select(.name == $n) | .id' <<<"$jobs")
+            steps=$(jq -r --arg n "$name" '[.jobs[] | select(.name == $n) | .steps[]?] | length' <<<"$jobs")
+            log=$(api "actions/jobs/$id/logs" 2>/dev/null || true)
+            if [ "$joined" = true ]; then
+              echo "::error::$name JOINED the tailnet"; bad=1
+            elif grep -q 'status 403' <<<"$log" && grep -q 'Unauthorized' <<<"$log"; then
+              echo "refused by Tailscale, as it must be: $name ($(grep -o 'status 403[^}]*}' <<<"$log" | head -1))"
+            elif [ "$name" = own-workflow ] && [ "$REF" != refs/heads/main ] && [ "$steps" = 0 ]; then
+              echo "refused by GitHub, as it must be: $name (Environment vps isn't for $REF)"
+            else
+              echo "::error::$name: no proof of a refusal (joined=$joined, $steps steps); look at its log"; bad=1
+            fi
           done
           exit "$bad"

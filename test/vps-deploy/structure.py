@@ -54,6 +54,11 @@ else:
     r = subprocess.run(["git", "-C", sys.argv[2], "diff", "--quiet", pin, "HEAD", "--", "vps/"], capture_output=True, text=True)
     if r.returncode != 0:
         problems.append(f"vps/ at the pinned {pin[:7]} differs from this checkout's (or the commit is unknown): repin vps-deploy.yml ({r.stderr.strip()[:120]})")
+    # Every app fetches the action at that commit: it must stay in this branch's history (on main:
+    # main's), not only on a PR branch that a squash or rebase leaves behind and someone deletes.
+    r = subprocess.run(["git", "-C", sys.argv[2], "merge-base", "--is-ancestor", pin, "HEAD"], capture_output=True, text=True)
+    if r.returncode != 0:
+        problems.append(f"the pinned {pin[:7]} isn't an ancestor of this commit: merge with a merge commit, or repin to a commit on this branch")
 # Every caller in this repo (smoke) passes the Environment's secrets with inherit only, may mint
 # an OIDC token, and names a vps.yaml that exists.
 import glob, os
@@ -72,4 +77,4 @@ for p in problems:
     print("   FAIL: " + p)
 if problems:
     sys.exit(1)
-print("   ok: Environment vps, push/dispatch on main only, OIDC, two secrets by name, SHA pins, live-gated Receiver/wait, the pinned vps/ is this one")
+print("   ok: Environment vps, push/dispatch on main only, OIDC, two secrets by name, SHA pins, live-gated Receiver/wait, the pinned vps/ is this one and in this history")
