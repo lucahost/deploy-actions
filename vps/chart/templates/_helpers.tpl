@@ -17,11 +17,11 @@ securityContext:
   capabilities:
     drop: [ALL]
 {{- end }}
-{{/* An image: built ones come from .Values.images (set by vps-app.yml), others are pinned in vps.yaml. */}}
+{{/* An image: built ones come from .Values.images (set by vps-deploy.yml), others are pinned in vps.yaml. */}}
 {{- define "vps.image" -}}
 {{- if .spec.build -}}
 {{- $img := index .root.Values.images .key | default "" -}}
-{{- if not $img }}{{ fail (printf "no built image for %s (vps-app.yml sets .images)" .key) }}{{ end -}}
+{{- if not $img }}{{ fail (printf "no built image for %s (vps-deploy.yml sets .images)" .key) }}{{ end -}}
 {{- $img -}}
 {{- else -}}
 {{- .spec.image -}}

@@ -2,7 +2,7 @@ name: vps render and pack
 description: >-
   Renders an app's vps.yaml with this directory's chart and packs the artifact Flux applies
   (lucahost/vps-gitops, docs/design.md "Onboarding v2"). A composite action so that the runner
-  fetches the chart and scripts at the very commit vps-app.yml pins (a reusable workflow can't
+  fetches the chart and scripts at the very commit vps-deploy.yml pins (a reusable workflow can't
   check out its own private repo).
 inputs:
   file:

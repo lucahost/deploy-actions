@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Self-test of .github/workflows/vps-deploy.yml on a GitHub runner, without the VPS: the workflow's
-# own step scripts (test/vps-deploy/steps.py) run against a zot registry with the platform's access
-# rules, a local bare deploy repo and a fake Flux (test/vps-deploy/fake_flux.py). Only the tailnet
-# steps are left out. Checks: the bump pins the digest the registry serves; the commit message; a
-# signed Receiver call; the wait step passes when Flux applies, fails when Flux reports a failure
-# or nothing converges; a wrong token and another app's registry path are refused; a re-run with the
-# same images commits nothing.
+# Self-test of .github/workflows/vps-deploy.yml (Onboarding v2) on a GitHub runner, without the VPS:
+# the workflow's own step scripts (test/vps-deploy/steps.py) and its render/pack action run against
+# a zot registry with the platform's access rules and a fake Flux (test/vps-deploy/fake_flux_oci.py).
+# Only the tailnet steps are left out. Checks:
+#   - the build makes one image per component and migrate; the push pins what the registry serves;
+#   - the artifact holds the rendered manifests, extra/ and the secretGenerator, builds, and passes
+#     kubeconform; every pod has the secure defaults;
+#   - without `live` the run only publishes; after a cutover made `live`, the next run moves it,
+#     calls the Receiver and waits (applied passes; a failure and a timeout fail);
+#   - refused: another app's registry path, a plaintext secret file, unknown vps.yaml fields.
 # shellcheck disable=SC2015  # "check && ok … || fail …": ok() always succeeds
 set -Eeuo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -17,33 +20,21 @@ ok()   { printf '   ok: %s\n' "$*"; }
 fail() { printf '   FAIL: %s\n' "$*"; FAILED=1; }
 die()  { printf '!! %s\n' "$*" >&2; exit 1; }
 info() { printf '\n== %s\n' "$*"; }
-# The registry the VPS runs (lucahost/vps-gitops infrastructure/registry/deployment.yaml).
 ZOT_IMAGE=ghcr.io/project-zot/zot-minimal-linux-amd64:v2.1.23@sha256:63384d37f482ab49e112e006dba47855edcac567db247d2be9b0fe6a05da7b33
+APP_DIR=$W/app
 
-run_step() {  # $1 = step id: its script, the way Actions runs it; outputs go to $W/out.<id>
-  python3 -I "$HERE/steps.py" "$WF" "$1" > "$W/step.$1.sh"
+run_step() {  # $1 = step id: its script, the way Actions runs it, in the app's checkout
+  python3 -I "$ROOT/test/vps-deploy/steps.py" "$WF" "$1" > "$W/step.$1.sh"
   : > "$W/out.$1"
-  GITHUB_OUTPUT=$W/out.$1 bash --noprofile --norc -eo pipefail "$W/step.$1.sh"
+  (cd "$APP_DIR" && GITHUB_OUTPUT=$W/out.$1 GITHUB_STEP_SUMMARY=$W/summary bash --noprofile --norc -eo pipefail "$W/step.$1.sh")
 }
-out() {  # $1 = step id, $2 = output name (key=value or key<<EOF … EOF)
-  python3 -I - "$W/out.$1" "$2" <<'PY'
-import sys
-lines, key = open(sys.argv[1]).read().split("\n"), sys.argv[2]
-for i, line in enumerate(lines):
-    if line.startswith(key + "="):
-        print(line[len(key) + 1:]); break
-    if line.startswith(key + "<<"):
-        end = line[len(key) + 2:]; j = i + 1; vals = []
-        while lines[j] != end:
-            vals.append(lines[j]); j += 1
-        print("\n".join(vals)); break
-PY
-}
+out() { sed -n "s/^$2=//p" "$W/out.$1" | head -1; }
 
-info "fixtures: zot with per-app users, a bare deploy repo, a fake Flux"
-SMOKE_PW=$(openssl rand -hex 16); OTHER_PW=$(openssl rand -hex 16)
+info "fixtures: zot (demo, other, vps-cutover, puller), the demo app, a fake Flux"
+DEMO_PW=$(openssl rand -hex 16); OTHER_PW=$(openssl rand -hex 16); CUT_PW=$(openssl rand -hex 16)
 mkdir -p "$W/zot" "$W/zotdata"; chmod 0777 "$W/zotdata"
-{ printf '%s\n' "$SMOKE_PW" | htpasswd -niB -C 6 smoke; printf '%s\n' "$OTHER_PW" | htpasswd -niB -C 6 biergit; } > "$W/zot/htpasswd"
+{ printf '%s\n' "$DEMO_PW" | htpasswd -niB -C 6 demo; printf '%s\n' "$OTHER_PW" | htpasswd -niB -C 6 other
+  printf '%s\n' "$CUT_PW" | htpasswd -niB -C 6 vps-cutover; } > "$W/zot/htpasswd"
 cat > "$W/zot/config.json" <<'EOF'
 {
   "distSpecVersion": "1.1.1",
@@ -52,127 +43,113 @@ cat > "$W/zot/config.json" <<'EOF'
     "address": "0.0.0.0", "port": "5000",
     "auth": {"htpasswd": {"path": "/etc/zot/htpasswd"}},
     "accessControl": {"repositories": {
-      "smoke/**":   {"policies": [{"users": ["smoke"],   "actions": ["read", "create", "update"]}], "defaultPolicy": []},
-      "biergit/**": {"policies": [{"users": ["biergit"], "actions": ["read", "create", "update"]}], "defaultPolicy": []}
+      "demo/**":  {"policies": [{"users": ["demo"], "actions": ["read", "create", "update"]},
+                                {"users": ["vps-cutover"], "actions": ["read", "create", "update"]}], "defaultPolicy": []},
+      "other/**": {"policies": [{"users": ["other"], "actions": ["read", "create", "update"]}], "defaultPolicy": []}
     }}
   },
   "log": {"level": "warn"}
 }
 EOF
 chmod 0644 "$W/zot/"*
-docker run -d --name zot -p 127.0.0.1:5000:5000 -v "$W/zot:/etc/zot:ro" -v "$W/zotdata:/var/lib/registry" "$ZOT_IMAGE" >/dev/null
-trap 'docker rm -f zot >/dev/null 2>&1 || true; kill "${FLUX_PID:-0}" 2>/dev/null || true' EXIT
-for _ in $(seq 1 60); do
-  [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5000/v2/)" = 401 ] && break; sleep 1
-done
-[ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5000/v2/)" = 401 ] || { docker logs zot | tail -20; die "zot didn't start"; }
-ok "zot: smoke may push to smoke/**, biergit to biergit/**"
-
-git init -q --bare -b main "$W/deploy.git"
-git clone -q "$W/deploy.git" "$W/seed" 2>/dev/null
-cat > "$W/seed/kustomization.yaml" <<'EOF'
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources:
-  - deployment.yaml
-images:
-  - name: registry.internal/smoke/hello
-    newTag: loop-20261125-071022
-    digest: sha256:c3bcf3d1a53a027bfa515b9fe4fbbe7bf6b791476a5af853de439ad494b145bd
-EOF
-cat > "$W/seed/deployment.yaml" <<'EOF'
-apiVersion: apps/v1
-kind: Deployment
-metadata: {name: hello}
-spec:
-  selector: {matchLabels: {app: hello}}
-  template:
-    metadata: {labels: {app: hello}}
-    spec: {containers: [{name: hello, image: registry.internal/smoke/hello}]}
-EOF
-git -C "$W/seed" add -A
-git -C "$W/seed" -c user.name=seed -c user.email=seed@example.invalid commit -qm seed
-git -C "$W/seed" push -q origin main
-ok "bare deploy repo with the smoke app's kustomization"
-
-openssl rand -hex 32 | tr -d '\n' > "$W/token"
-echo ok > "$W/mode"; : > "$W/hook.log"
-python3 -I "$HERE/fake_flux.py" 8447 "$W/token" /hook/selftest "$W/deploy.git" "$W/mode" "$W/hook.log" &
+docker run -d --name zot-v2 -p 127.0.0.1:5000:5000 -v "$W/zot:/etc/zot:ro" -v "$W/zotdata:/var/lib/registry" "$ZOT_IMAGE" >/dev/null
+trap 'docker rm -f zot-v2 >/dev/null 2>&1 || true; kill "${FLUX_PID:-0}" 2>/dev/null || true' EXIT
+for _ in $(seq 1 60); do [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5000/v2/)" = 401 ] && break; sleep 1; done
+[ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5000/v2/)" = 401 ] || { docker logs zot-v2 | tail -20; die "zot didn't start"; }
+cp -r "$HERE/demo" "$APP_DIR"
+git -C "$APP_DIR" init -q && git -C "$APP_DIR" add -A && git -C "$APP_DIR" -c user.name=t -c user.email=t@t commit -qm demo
+TOKEN=$(openssl rand -hex 32); printf '%s' "$TOKEN" > "$W/token"
+HOOK=$(printf '%s%s%s' "$TOKEN" receiver-demo flux-system | sha256sum | cut -d' ' -f1)
+printf 'vps-cutover:%s' "$CUT_PW" > "$W/cutcred"; echo ok > "$W/mode"
+python3 -I "$HERE/fake_flux_oci.py" 8088 "$W/token" "$HOOK" http://127.0.0.1:5000 "$W/cutcred" demo "$W/mode" > "$W/flux.log" 2>&1 &
 FLUX_PID=$!
-for _ in $(seq 1 30); do curl -s -o /dev/null http://127.0.0.1:8447/status/smoke && break; sleep 0.2; done
-ok "fake Flux: Receiver /hook/selftest, GET /status/<app>"
 
-export APP=smoke SHA SOURCE_REPO=lucahost/deploy-actions RUN_ID=selftest KUSTOMIZE_VERSION KUSTOMIZE_SHA256
-KUSTOMIZE_VERSION=$(python3 -I -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["jobs"]["deploy"]["env"]["KUSTOMIZE_VERSION"])' "$WF")
-KUSTOMIZE_SHA256=$(python3 -I -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["jobs"]["deploy"]["env"]["KUSTOMIZE_SHA256"])' "$WF")
-SHA=$(git -C "$ROOT" rev-parse HEAD)
-export DEPLOY_REPO_URL=file://$W/deploy.git COMPONENTS=hello=smoke BUILD_ARGS=""
-NAMES="TS_OIDC_CLIENT_ID TS_OIDC_AUDIENCE VPS_REGISTRY VPS_REGISTRY_USER VPS_REGISTRY_PASSWORD VPS_RECEIVER_URL VPS_RECEIVER_TOKEN VPS_APP_DEPLOY_KEY"
-for v in $NAMES; do export "SET_$v=true"; done     # what the check step gets when every one reached the job
-export VPS_REGISTRY=127.0.0.1:5000 VPS_REGISTRY_USER=smoke VPS_REGISTRY_PASSWORD=$SMOKE_PW REGISTRY_SCHEME=http
-export VPS_APP_DEPLOY_KEY="unused with a file:// deploy repo"
-export VPS_RECEIVER_URL=http://127.0.0.1:8447/hook/selftest WAIT_SECONDS=60
-VPS_RECEIVER_TOKEN=$(cat "$W/token"); export VPS_RECEIVER_TOKEN
-cd "$ROOT"
+export FILE=vps.yaml SOURCE_REPO=lucahost/demo RUN_ID=1 VPS_HOST=vps.invalid REGISTRY_PORT=8446 HOOK_PORT=8447 \
+  TS_OIDC_CLIENT_ID="" TS_OIDC_AUDIENCE="" VPS_DEPLOY_SELFTEST=1 FLUX_VERSION=2.9.6 \
+  FLUX_SHA256=b4d22673e9246cbd628881f1a9ef3b090085dced291e42d804555cee8e8d42c5 \
+  REGISTRY_HOST=127.0.0.1:5000 REGISTRY_SCHEME=http FLUX_INSECURE=1 HOOK_BASE=http://127.0.0.1:8088 \
+  SET_VPS_REGISTRY_PASSWORD=true SET_VPS_RECEIVER_TOKEN=true VPS_REGISTRY_PASSWORD=$DEMO_PW VPS_RECEIVER_TOKEN=$TOKEN WAIT_SECONDS=20
+export RUNNER_TEMP=$W/runner; mkdir -p "$RUNNER_TEMP"
 
-info "deploy: check, build, push, bump, Receiver, wait"
-run_step check && ok "inputs and secrets checked"
-# What the first real run hit: Environment secrets that never reached the called job. The check
-# must fail and name exactly the empty ones (never a value).
-if out_c=$(SET_VPS_REGISTRY_PASSWORD=false SET_TS_OIDC_AUDIENCE=false run_step check 2>&1); then
-  fail "the check passed with two names empty"
-else
-  case "$out_c" in
-    *"empty in this job: TS_OIDC_AUDIENCE VPS_REGISTRY_PASSWORD."*"secrets: inherit"*) ok "the check names the empty ones (TS_OIDC_AUDIENCE VPS_REGISTRY_PASSWORD) and points at secrets: inherit";;
-    *) fail "the check failed without naming them: $out_c";;
-  esac
-  case "$out_c" in *"$SMOKE_PW"*) fail "the check printed a secret value";; esac
-fi
-t0=$(date +%s)
-run_step build && ok "built smoke/ for linux/amd64"
-run_step push && ok "pushed as smoke"
-IMAGES=$(out push images); export IMAGES
-digest=$(curl -fsSI -u "smoke:$SMOKE_PW" -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
-  "http://127.0.0.1:5000/v2/smoke/hello/manifests/$SHA" | tr -d '\r' | awk 'tolower($1) == "docker-content-digest:" {print $2}')
-[ "$IMAGES" = "registry.internal/smoke/hello:$SHA@$digest" ] && ok "image line pins the digest the registry serves ($digest)" \
-  || fail "images output '$IMAGES' vs registry digest '$digest'"
-run_step bump && ok "bumped the deploy repo"
-BUMP_SHA=$(out bump bump-sha); export BUMP_SHA
-[ "$(out bump changed)" = true ] && ok "a new deploy commit" || fail "no commit made"
-k=$(git --git-dir "$W/deploy.git" show main:kustomization.yaml)
-grep -q "newTag: $SHA" <<<"$k" && grep -q "digest: $digest" <<<"$k" && ok "kustomization.yaml: newTag $SHA, digest $digest" \
-  || { fail "kustomization.yaml not bumped:"; printf '%s\n' "$k"; }
-msg=$(git --git-dir "$W/deploy.git" log -1 --format=%s main)
-[ "$msg" = "deploy(smoke): hello ${SHA:0:7} (lucahost/deploy-actions@${SHA:0:7}, run selftest)" ] && ok "commit: $msg" || fail "commit message: $msg"
-[ "$(git --git-dir "$W/deploy.git" rev-parse main)" = "$BUMP_SHA" ] && ok "bump-sha is the deploy repo's main" || fail "bump-sha differs from main"
-run_step notify && ok "Receiver accepted the signed call"
-[ "$(grep -c '^accepted ' "$W/hook.log")" = 1 ] && ok "fake Flux verified one HMAC signature" || fail "hook log: $(cat "$W/hook.log")"
-grep -q "\"bump\":\"$BUMP_SHA\"" "$W/hook.log" && ok "the body names the deploy commit" || fail "body lacks the bump sha"
-if run_step wait; then ok "wait: applied and Ready seen through GET /status/smoke"; else fail "wait failed on a good deploy"; fi
-ok "build → live here: $(( $(date +%s) - t0 )) s (no tailnet; the VPS timings come from the smoke workflow's summary)"
-
-info "a re-run with the same images commits nothing"
-run_step bump >/dev/null
-[ "$(out bump changed)" = false ] && [ "$(out bump bump-sha)" = "$BUMP_SHA" ] && ok "no second commit" || fail "re-run committed again"
-
-info "failures the job must report"
-# Each failure comes with a new deploy commit, as a real failing deploy would (a Receiver call for a
-# revision Flux already runs leaves it Ready, and the wait rightly passes at once).
-new_bump() {  # $1 = a fake digest character: commits a bump to that digest, exports BUMP_SHA
-  IMAGES="registry.internal/smoke/hello:$1$1$1@sha256:$(printf '%064d' 0 | tr 0 "$1")" run_step bump >/dev/null
-  BUMP_SHA=$(out bump bump-sha); export BUMP_SHA
+deploy() {  # $1 = commit sha: check, build, push, render+pack (the action's scripts), publish, summary
+  # Called with || (which turns off set -e inside), so every step returns on its own failure.
+  export SHA=$1; rm -rf "$RUNNER_TEMP/artifact"; : > "$W/summary"
+  run_step check || { echo "!! check failed"; return 1; }; APP=$(out check app); export APP
+  run_step build || { echo "!! build failed"; return 1; }; NAMES=$(out build names); export NAMES
+  run_step push || { echo "!! push failed"; return 1; }; IMAGES=$(out push images); export IMAGES
+  printf '%s' "$IMAGES" > "$W/images.json"
+  (cd "$APP_DIR" && bash "$ROOT/vps/render.sh" vps.yaml "$W/images.json" "$SHA" "$W/rendered.yaml" \
+     && bash "$ROOT/vps/pack.sh" . "$W/rendered.yaml" "$RUNNER_TEMP/artifact") || { echo "!! render/pack failed"; return 1; }
+  run_step publish || { echo "!! publish failed"; return 1; }
+  DIGEST=$(out publish digest); export DIGEST
+  LIVE=$(out publish live) ARTIFACT=$(out publish artifact) run_step summary || { echo "!! summary failed"; return 1; }
 }
-new_bump d
-echo fail > "$W/mode"; run_step notify >/dev/null
-if out_w=$(run_step wait 2>&1); then fail "wait passed although Flux reported HealthCheckFailed"; else
+
+info "a deploy before the cutover: publish only"
+SHA1=$(printf '%040d' 1)
+deploy "$SHA1" > "$W/deploy1.log" 2>&1 || { cat "$W/deploy1.log"; die "the first deploy failed"; }
+expect_names='["web","api","api-migrate"]'
+[ "$(out build names | jq -c 'sort')" = "$(jq -c 'sort' <<<"$expect_names")" ] && ok "built web, api and api-migrate" || fail "built $(out build names)"
+grep -q "registry.internal/demo/api:$SHA1@sha256:" <<<"$(out push images)" && ok "images pinned by the registry's digests" || fail "images: $(out push images)"
+[ "$(out publish live)" = false ] && ok "no live tag: published only" || fail "live=$(out publish live) before any cutover"
+grep -q "Published only" "$W/summary" && ok "the summary says so" || fail "no 'Published only' in the summary"
+# flux pull wants an existing output directory; credentials through a docker config, not argv
+mkdir -p "$W/pulled" "$W/pull-docker"
+AUTH=$(printf 'demo:%s' "$DEMO_PW" | base64 -w0) jq -n '{auths: {"127.0.0.1:5000": {auth: $ENV.AUTH}}}' > "$W/pull-docker/config.json"
+if ! DOCKER_CONFIG=$W/pull-docker flux pull artifact "oci://127.0.0.1:5000/demo/manifests:$SHA1" --output "$W/pulled" --insecure-registry > "$W/pull.log" 2>&1; then
+  fail "flux pull artifact: $(tail -3 "$W/pull.log")"
+elif diff -r "$W/pulled" "$RUNNER_TEMP/artifact" >/dev/null; then ok "the artifact in the registry is what was packed"
+else fail "pulled artifact differs: $(diff -rq "$W/pulled" "$RUNNER_TEMP/artifact" | head -3)"; fi
+if kubectl kustomize "$W/pulled" > "$W/built.yaml" 2> "$W/kustomize.log"; then ok "the artifact builds (kustomize)"
+else fail "kustomize build of the artifact: $(tail -3 "$W/kustomize.log")"; fi
+[ -s "$W/built.yaml" ] || die "nothing built; the checks below would pass on nothing"
+if command -v kubeconform >/dev/null; then
+  kubeconform -strict -summary -kubernetes-version master "$W/built.yaml" >/dev/null && ok "kubeconform: valid" || fail "kubeconform: $(kubeconform -strict -kubernetes-version master "$W/built.yaml" 2>&1 | tail -3)"
+fi
+pods=$(grep -c "hostUsers: false" "$W/built.yaml" || true)
+expect_pods=$(grep -cE '^kind: (Deployment|CronJob)$' "$W/built.yaml")
+[ "$pods" = "$expect_pods" ] && ok "every pod template ($pods) has hostUsers: false" || fail "hostUsers: false on $pods of $expect_pods pod templates"
+for k in 'readOnlyRootFilesystem: true' 'allowPrivilegeEscalation: false' 'runAsNonRoot: true' 'automountServiceAccountToken: false'; do
+  [ "$(grep -c "$k" "$W/built.yaml")" -ge "$expect_pods" ] && ok "$k everywhere" || fail "$k missing somewhere"
+done
+grep -q 'name: demo-env-' "$W/built.yaml" && grep -q 'JWT_SECRET:' "$W/built.yaml" && ok "secretGenerator: Secret demo-env-<hash>, its key, the references rewritten" || fail "no generated Secret"
+
+info "the cutover makes live; the next deploy moves it and waits"
+# What `vps cutover` does as vps-cutover: the artifact's manifest PUT under "live".
+mt=application/vnd.oci.image.manifest.v1+json; d1=$(out publish digest)
+if printf 'user = "vps-cutover:%s"\n' "$CUT_PW" | curl -fsS -K - -H "Accept: $mt" -o "$W/m1.json" "http://127.0.0.1:5000/v2/demo/manifests/manifests/$d1" \
+   && printf 'user = "vps-cutover:%s"\n' "$CUT_PW" | curl -fsS -K - -X PUT -H "Content-Type: $mt" --data-binary @"$W/m1.json" -o /dev/null \
+        "http://127.0.0.1:5000/v2/demo/manifests/manifests/live"; then
+  ok "vps-cutover tagged live (what 'vps cutover' does)"
+else fail "vps-cutover couldn't tag live: $(docker logs zot-v2 2>&1 | tail -5)"; fi
+SHA2=$(printf '%040d' 2)
+deploy "$SHA2" > "$W/deploy2.log" 2>&1 || { cat "$W/deploy2.log"; die "the second deploy failed"; }
+[ "$(out publish live)" = true ] && ok "live exists: this run deploys" || fail "live=$(out publish live) after the cutover"
+live=$(printf 'user = "demo:%s"\n' "$DEMO_PW" | curl -s -I -K - -H 'Accept: application/vnd.oci.image.manifest.v1+json' http://127.0.0.1:5000/v2/demo/manifests/manifests/live | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:" {print $2}')
+[ "$live" = "$DIGEST" ] && ok "live moved to this run's artifact ($live)" || fail "live is $live, the run pushed $DIGEST"
+run_step notify >/dev/null && ok "Receiver accepted the signed call" || fail "Receiver refused"
+run_step wait >/dev/null && ok "wait: applied (live@$DIGEST) and Ready" || fail "wait failed on a good deploy"
+# A new artifact Flux can't get healthy, then one that never converges: each fails the wait.
+echo fail > "$W/mode"; SHA3=$(printf '%040d' 3); deploy "$SHA3" > "$W/deploy3.log" 2>&1 || { cat "$W/deploy3.log"; die "the third deploy failed"; }
+run_step notify >/dev/null
+if out_w=$(run_step wait 2>&1); then fail "wait passed although Flux reported a failure"; else
   grep -q "Flux couldn't apply" <<<"$out_w" && ok "wait fails when Flux reports a failure" || fail "wait failed for another reason: $out_w"; fi
-new_bump e
-echo never > "$W/mode"; run_step notify >/dev/null
+echo never > "$W/mode"; SHA4=$(printf '%040d' 4); deploy "$SHA4" > "$W/deploy4.log" 2>&1 || { cat "$W/deploy4.log"; die "the fourth deploy failed"; }
+run_step notify >/dev/null
 if out_w=$(WAIT_SECONDS=6 run_step wait 2>&1); then fail "wait passed although nothing converged"; else
   grep -q "not applied and healthy after 6s" <<<"$out_w" && ok "wait fails when nothing converges in time" || fail "wait failed for another reason: $out_w"; fi
 if VPS_RECEIVER_TOKEN=wrong run_step notify >/dev/null 2>&1; then fail "a wrong token was accepted"; else ok "the Receiver refuses a wrong token"; fi
-if APP=biergit run_step build >/dev/null 2>&1 && APP=biergit run_step push >/dev/null 2>&1; then
-  fail "smoke's credentials pushed to biergit/"; else ok "smoke's credentials can't push to biergit/"; fi
 
-if [ "$FAILED" -ne 0 ]; then echo; echo "!! vps-deploy self-test FAILED"; exit 1; fi
-echo; echo "vps-deploy self-test: all checks passed"
+info "refusals"
+if APP=other run_step push >/dev/null 2>&1; then fail "demo's password pushed to other/"; else ok "demo's password can't push to another app's path"; fi
+printf 'not encrypted\n' > "$APP_DIR/deploy/secrets/demo-env/PLAIN"
+if (cd "$APP_DIR" && bash "$ROOT/vps/pack.sh" . "$W/rendered.yaml" "$W/plain-art") > "$W/plain.log" 2>&1; then fail "pack took a plaintext secret"
+else grep -q "isn't a SOPS-encrypted file" "$W/plain.log" && ok "pack refuses a plaintext secret file" || fail "pack failed for another reason: $(cat "$W/plain.log")"; fi
+rm "$APP_DIR/deploy/secrets/demo-env/PLAIN"
+printf 'app: demo\ncomponents:\n  web: {build: {context: web}, uid: 101, memory: 64Mi, securityContext: {privileged: true}}\n' > "$W/bad.yaml"
+if bash "$ROOT/vps/render.sh" "$W/bad.yaml" "$W/images.json" x "$W/bad.out" > "$W/bad.log" 2>&1; then fail "render took an unknown field"
+else grep -q "additional properties 'securityContext' not allowed" "$W/bad.log" && ok "render refuses fields that aren't in the schema (no securityContext overrides)" || fail "render failed for another reason: $(tail -2 "$W/bad.log")"; fi
+
+echo
+if [ "$FAILED" -ne 0 ]; then echo "!! vps-deploy self-test FAILED"; exit 1; fi
+echo "vps-deploy self-test: all checks passed"

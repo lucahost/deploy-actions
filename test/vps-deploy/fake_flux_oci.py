@@ -1,4 +1,4 @@
-"""A stand-in for the VPS side of vps-app.yml, for the self-test (never deployed anywhere).
+"""A stand-in for the VPS side of vps-deploy.yml, for the self-test (never deployed anywhere).
 
 POST /hook/<path>: checks X-Signature like Flux's generic-hmac Receiver, then "applies" what the
 tag `live` of <app>/manifests points to in the registry: after a second, GET /status/<app> answers

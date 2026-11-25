@@ -1,4 +1,4 @@
-# The VPS's smoke app (lucahost/vps-gitops tenant "smoke", deploy repo lucahost/vps-app-smoke):
+# The VPS's smoke app (lucahost/vps-gitops tenants/smoke.yaml, smoke/vps.yaml here):
 # nginx-unprivileged serving a page that names the commit it was built from. Its only job is to
 # prove the deploy path (.github/workflows/smoke.yml → vps-deploy.yml). The base is the linux/amd64
 # manifest the platform already runs (vps-gitops bootstrap/lib.sh, SMOKE_SRC_IMAGE).

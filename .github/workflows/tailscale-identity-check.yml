@@ -2,15 +2,19 @@ name: Tailscale identity check
 
 # Live check of the one federated Tailscale identity (lucahost/vps-gitops docs/design.md, "Onboarding
 # v2"; the owner's one-time step 1): subject repo:lucahost/*, claims environment=vps,
-# ref=refs/heads/main, job_workflow_ref=lucahost/deploy-actions/.github/workflows/vps-app.yml@*.
-# Tailscale documents `*` and custom claims, but not that every claim must match: each job below
-# tries to join with that identity in a way the claims must refuse, and `verdict` fails unless
-# every one of them was refused. The positive case is any vps-app.yml run (smoke).
+# ref=refs/heads/main, repository_owner=lucahost,
+# job_workflow_ref=lucahost/deploy-actions/.github/workflows/vps-deploy.yml@*. Tailscale documents
+# `*` and custom claims, but not that every claim must match: each job below tries to join with
+# that identity in a way the claims must refuse, and `verdict` fails unless every one of them was
+# refused. The positive case is any vps-deploy.yml run (smoke).
 #
-# Run it twice, from Actions → "Tailscale identity check" → Run workflow:
+# Each attempt is a step with continue-on-error, judged by its *outcome* (a job-level
+# continue-on-error would report a refused job as "success" to `needs`, and hide the difference).
+#
+# Run it from Actions → "Tailscale identity check" → Run workflow:
 #   1. on main: no-environment and own-workflow must be refused;
-#   2. on any other branch: the same, and GitHub must refuse Environment vps to the branch
-#      (deployment branch policy) before own-workflow starts.
+#   2. on any other branch: the same, and GitHub refuses Environment vps to the branch (deployment
+#      branch policy) before own-workflow starts, which counts as refused.
 on: workflow_dispatch
 
 permissions:
@@ -29,31 +33,37 @@ jobs:
           persist-credentials: false
       - id: read
         run: |
-          id=$(yq -r '.jobs.deploy.env.TS_OIDC_CLIENT_ID' .github/workflows/vps-app.yml)
-          aud=$(yq -r '.jobs.deploy.env.TS_OIDC_AUDIENCE' .github/workflows/vps-app.yml)
-          [ -n "$id" ] && [ -n "$aud" ] || { echo "::error::vps-app.yml has no TS_OIDC_* yet"; exit 1; }
+          id=$(yq -r '.jobs.deploy.env.TS_OIDC_CLIENT_ID' .github/workflows/vps-deploy.yml)
+          aud=$(yq -r '.jobs.deploy.env.TS_OIDC_AUDIENCE' .github/workflows/vps-deploy.yml)
+          [ -n "$id" ] && [ -n "$aud" ] || { echo "::error::vps-deploy.yml has no TS_OIDC_* yet"; exit 1; }
           { echo "client-id=$id"; echo "audience=$aud"; } >> "$GITHUB_OUTPUT"
 
   # The token has no environment claim.
   no-environment:
     needs: identity
     runs-on: ubuntu-24.04
-    continue-on-error: true
+    outputs:
+      joined: ${{ steps.join.outcome == 'success' }}
     steps:
-      - uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
+      - id: join
+        continue-on-error: true
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
         with:
           oauth-client-id: ${{ needs.identity.outputs.client-id }}
           audience: ${{ needs.identity.outputs.audience }}
           tags: tag:ci-deploy
 
-  # Environment vps (on main), but this file's own step: job_workflow_ref isn't vps-app.yml.
+  # Environment vps (on main), but this file's own step: job_workflow_ref isn't vps-deploy.yml.
   own-workflow:
     needs: identity
     runs-on: ubuntu-24.04
     environment: vps
-    continue-on-error: true
+    outputs:
+      joined: ${{ steps.join.outcome == 'success' }}
     steps:
-      - uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
+      - id: join
+        continue-on-error: true
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
         with:
           oauth-client-id: ${{ needs.identity.outputs.client-id }}
           audience: ${{ needs.identity.outputs.audience }}
@@ -65,15 +75,20 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - env:
-          NO_ENV: ${{ needs.no-environment.result }}
-          OWN: ${{ needs.own-workflow.result }}
+          NO_ENV_JOINED: ${{ needs.no-environment.outputs.joined }}
+          NO_ENV_RESULT: ${{ needs.no-environment.result }}
+          OWN_JOINED: ${{ needs.own-workflow.outputs.joined }}
+          OWN_RESULT: ${{ needs.own-workflow.result }}
           REF: ${{ github.ref }}
         run: |
-          echo "no-environment: $NO_ENV, own-workflow: $OWN (ref $REF)"
-          # A refused join fails its job (continue-on-error only keeps the run going): both must be
-          # "failure". "success" means the identity let that job join the tailnet.
+          echo "ref $REF"
           bad=0
-          for r in "no-environment=$NO_ENV" "own-workflow=$OWN"; do
-            [ "${r#*=}" = failure ] && echo "refused, as it must be: ${r%%=*}" || { echo "::error::${r%%=*} was NOT refused (${r#*=})"; bad=1; }
+          # joined=true: Tailscale let it in. A job GitHub refused before any step (Environment
+          # vps from a branch) has result failure and no output: also refused.
+          for r in "no-environment|$NO_ENV_JOINED|$NO_ENV_RESULT" "own-workflow|$OWN_JOINED|$OWN_RESULT"; do
+            IFS='|' read -r name joined result <<<"$r"
+            if [ "$joined" = true ]; then echo "::error::$name JOINED the tailnet"; bad=1
+            elif [ "$joined" = false ] || [ "$result" = failure ]; then echo "refused, as it must be: $name (job $result)"
+            else echo "::error::$name: no verdict (job $result)"; bad=1; fi
           done
           exit "$bad"

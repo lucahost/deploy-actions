@@ -13,19 +13,19 @@ on:
       - smoke/**
       - vps/**
       - .github/workflows/smoke.yml
-      - .github/workflows/vps-app.yml
+      - .github/workflows/vps-deploy.yml
   workflow_dispatch:
 
 permissions:
   contents: read
-  id-token: write   # vps-app.yml joins the tailnet with this run's OIDC token
+  id-token: write   # vps-deploy.yml joins the tailnet with this run's OIDC token
 
 jobs:
   # `secrets: inherit` is what lets the Environment's secrets reach the called job at all (GitHub
   # passes a called workflow only what its caller passes); this repo has no repository or
   # organisation secrets, so that's all it carries.
   deploy:
-    uses: ./.github/workflows/vps-app.yml
+    uses: ./.github/workflows/vps-deploy.yml
     with:
       file: smoke/vps.yaml
     secrets: inherit

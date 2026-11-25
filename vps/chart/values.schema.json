@@ -123,9 +123,9 @@
       }
     },
     "images": {
-      "description": "Set by vps-app.yml, never by hand: component (or <component>-migrate) → registry.internal/<app>/<image>:<sha>@<digest>.",
+      "description": "Set by vps-deploy.yml, never by hand: component (or <component>-migrate) → registry.internal/<app>/<image>:<sha>@<digest>.",
       "type": "object", "additionalProperties": {"$ref": "#/definitions/pinned"}
     },
-    "revision": {"type": "string", "description": "Set by vps-app.yml: the source commit."}
+    "revision": {"type": "string", "description": "Set by vps-deploy.yml: the source commit."}
   }
 }
