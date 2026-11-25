@@ -141,9 +141,17 @@ run_step bump >/dev/null
 [ "$(out bump changed)" = false ] && [ "$(out bump bump-sha)" = "$BUMP_SHA" ] && ok "no second commit" || fail "re-run committed again"
 
 info "failures the job must report"
+# Each failure comes with a new deploy commit, as a real failing deploy would (a Receiver call for a
+# revision Flux already runs leaves it Ready, and the wait rightly passes at once).
+new_bump() {  # $1 = a fake digest character: commits a bump to that digest, exports BUMP_SHA
+  IMAGES="registry.internal/smoke/hello:$1$1$1@sha256:$(printf '%064d' 0 | tr 0 "$1")" run_step bump >/dev/null
+  BUMP_SHA=$(out bump bump-sha); export BUMP_SHA
+}
+new_bump d
 echo fail > "$W/mode"; run_step notify >/dev/null
 if out_w=$(run_step wait 2>&1); then fail "wait passed although Flux reported HealthCheckFailed"; else
   grep -q "Flux couldn't apply" <<<"$out_w" && ok "wait fails when Flux reports a failure" || fail "wait failed for another reason: $out_w"; fi
+new_bump e
 echo never > "$W/mode"; run_step notify >/dev/null
 if out_w=$(WAIT_SECONDS=6 run_step wait 2>&1); then fail "wait passed although nothing converged"; else
   grep -q "not applied and healthy after 6s" <<<"$out_w" && ok "wait fails when nothing converges in time" || fail "wait failed for another reason: $out_w"; fi
