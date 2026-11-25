@@ -129,10 +129,12 @@ live=$(printf 'user = "demo:%s"\n' "$DEMO_PW" | curl -s -I -K - -H 'Accept: appl
 [ "$live" = "$DIGEST" ] && ok "live moved to this run's artifact ($live)" || fail "live is $live, the run pushed $DIGEST"
 run_step notify >/dev/null && ok "Receiver accepted the signed call" || fail "Receiver refused"
 run_step wait >/dev/null && ok "wait: applied (live@$DIGEST) and Ready" || fail "wait failed on a good deploy"
-echo fail > "$W/mode"; run_step notify >/dev/null
+# A new artifact Flux can't get healthy, then one that never converges: each fails the wait.
+echo fail > "$W/mode"; SHA3=$(printf '%040d' 3); deploy "$SHA3" > "$W/deploy3.log" 2>&1 || { cat "$W/deploy3.log"; die "the third deploy failed"; }
+run_step notify >/dev/null
 if out_w=$(run_step wait 2>&1); then fail "wait passed although Flux reported a failure"; else
   grep -q "Flux couldn't apply" <<<"$out_w" && ok "wait fails when Flux reports a failure" || fail "wait failed for another reason: $out_w"; fi
-echo never > "$W/mode"; SHA3=$(printf '%040d' 3); deploy "$SHA3" > "$W/deploy3.log" 2>&1 || { cat "$W/deploy3.log"; die "the third deploy failed"; }
+echo never > "$W/mode"; SHA4=$(printf '%040d' 4); deploy "$SHA4" > "$W/deploy4.log" 2>&1 || { cat "$W/deploy4.log"; die "the fourth deploy failed"; }
 run_step notify >/dev/null
 if out_w=$(WAIT_SECONDS=6 run_step wait 2>&1); then fail "wait passed although nothing converged"; else
   grep -q "not applied and healthy after 6s" <<<"$out_w" && ok "wait fails when nothing converges in time" || fail "wait failed for another reason: $out_w"; fi

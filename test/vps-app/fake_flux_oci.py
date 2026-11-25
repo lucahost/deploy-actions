@@ -40,6 +40,8 @@ def apply_later(rev, mode):
             state.update(applied=rev, ready="True", reason="ReconciliationSucceeded", message="Applied revision: " + rev)
         elif mode == "fail":
             state.update(ready="False", reason="HealthCheckFailed", message="Deployment/api not ready")
+        else:  # never: still reconciling
+            state.update(ready="Unknown", reason="Progressing", message="Reconciliation in progress")
 
 
 class H(http.server.BaseHTTPRequestHandler):
