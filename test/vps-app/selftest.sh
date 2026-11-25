@@ -117,8 +117,9 @@ grep -q 'name: demo-env-' "$W/built.yaml" && grep -q 'JWT_SECRET:' "$W/built.yam
 info "the cutover makes live; the next deploy moves it and waits"
 mkdir -p "$W/cut-docker"
 AUTH=$(printf 'vps-cutover:%s' "$CUT_PW" | base64 -w0) jq -n '{auths: {"127.0.0.1:5000": {auth: $ENV.AUTH}}}' > "$W/cut-docker/config.json"
-DOCKER_CONFIG=$W/cut-docker flux tag artifact "oci://127.0.0.1:5000/demo/manifests:$SHA1" --tag live --insecure-registry >/dev/null 2>&1 \
-  && ok "vps-cutover tagged live (what 'vps cutover' does)" || fail "vps-cutover couldn't tag live"
+if DOCKER_CONFIG=$W/cut-docker flux tag artifact "oci://127.0.0.1:5000/demo/manifests:$SHA1" --tag live --insecure-registry > "$W/tag.log" 2>&1; then
+  ok "vps-cutover tagged live (what 'vps cutover' does)"
+else fail "vps-cutover couldn't tag live: $(tail -3 "$W/tag.log"; docker logs zot-v2 2>&1 | tail -5)"; fi
 SHA2=$(printf '%040d' 2)
 deploy "$SHA2" > "$W/deploy2.log" 2>&1 || { cat "$W/deploy2.log"; die "the second deploy failed"; }
 [ "$(out publish live)" = true ] && ok "live exists: this run deploys" || fail "live=$(out publish live) after the cutover"
