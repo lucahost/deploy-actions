@@ -1,0 +1,133 @@
+{{- $root := . }}
+{{- range $name, $c := .Values.components }}
+{{- $uid := $c.uid }}{{ $gid := $c.gid | default $c.uid }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    app: {{ $name }}
+spec:
+  replicas: {{ $c.replicas | default 1 }}
+  strategy:
+    {{- if eq ($c.strategy | default "RollingUpdate") "Recreate" }}
+    type: Recreate
+    {{- else }}
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    {{- end }}
+  selector:
+    matchLabels:
+      app: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app: {{ $name }}
+    spec:
+      {{- include "vps.pod" (dict "uid" $uid "gid" $gid) | nindent 6 }}
+      {{- with $c.migrate }}
+      initContainers:
+        - name: migrate
+          image: {{ include "vps.image" (dict "root" $root "spec" . "key" (printf "%s-migrate" $name)) }}
+          {{- with .command }}
+          command: {{ toJson . }}
+          {{- end }}
+          {{- with .args }}
+          args: {{ toJson . }}
+          {{- end }}
+          {{- include "vps.env" (dict "env" (merge (dict) (.env | default dict) ($c.env | default dict)) "secretEnv" $c.secretEnv) | nindent 10 }}
+          {{- include "vps.container" . | nindent 10 }}
+          resources:
+            requests: {cpu: 10m, memory: 64Mi}
+            limits: {memory: {{ .memory | default "512Mi" }}}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      {{- end }}
+      containers:
+        - name: {{ $name }}
+          image: {{ include "vps.image" (dict "root" $root "spec" $c "key" $name) }}
+          {{- with $c.command }}
+          command: {{ toJson . }}
+          {{- end }}
+          {{- with $c.args }}
+          args: {{ toJson . }}
+          {{- end }}
+          {{- with $c.port }}
+          ports:
+            - name: http
+              containerPort: {{ . }}
+          {{- end }}
+          {{- include "vps.env" $c | nindent 10 }}
+          {{- include "vps.container" . | nindent 10 }}
+          resources:
+            requests:
+              cpu: {{ $c.cpu | default "10m" }}
+              memory: {{ $c.memoryRequest | default "64Mi" }}
+            limits:
+              memory: {{ $c.memory }}
+          {{- if $c.port }}
+          readinessProbe:
+            {{- if $c.health }}
+            httpGet: {path: {{ $c.health }}, port: http}
+            {{- else }}
+            tcpSocket: {port: http}
+            {{- end }}
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            {{- if $c.health }}
+            httpGet: {path: {{ $c.health }}, port: http}
+            {{- else }}
+            tcpSocket: {port: http}
+            {{- end }}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          {{- end }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            {{- range $i, $p := $c.writable }}
+            - {name: w{{ $i }}, mountPath: {{ $p }}}
+            {{- end }}
+            {{- range $v, $p := $c.volumes }}
+            - {name: v-{{ $v }}, mountPath: {{ $p }}}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 256Mi}
+        {{- range $i, $p := $c.writable }}
+        - name: w{{ $i }}
+          emptyDir: {sizeLimit: 256Mi}
+        {{- end }}
+        {{- range $v, $p := $c.volumes }}
+        - name: v-{{ $v }}
+          persistentVolumeClaim: {claimName: {{ $v }}}
+        {{- end }}
+{{- if $c.port }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    app: {{ $name }}
+spec:
+  selector:
+    app: {{ $name }}
+  ports:
+    - name: http
+      port: {{ $c.port }}
+      targetPort: http
+{{- end }}
+{{- end }}
+{{- /* one PVC per tenant volume a component mounts */}}
+{{- $vols := dict }}
+{{- range $name, $c := .Values.components }}{{ range $v, $p := $c.volumes }}{{ $_ := set $vols $v true }}{{ end }}{{ end }}
+{{- range $v, $_ := $vols }}
+---
+{{ include "vps.pvc" (dict "app" $root.Values.app "volume" $v "claim" $v) }}
+{{- end }}

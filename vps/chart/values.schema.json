@@ -1,0 +1,131 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "vps.yaml (an app on the VPS cluster)",
+  "description": "What to run, never where traffic comes from or what the app may reach: that is the app's tenant entry in lucahost/vps-gitops. Unknown fields are errors.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["app", "components"],
+  "definitions": {
+    "name": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"},
+    "quantity": {"type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?(m|Ki|Mi|Gi)?$"},
+    "pinned": {"type": "string", "pattern": "^[a-z0-9.-]+(:[0-9]+)?/[a-z0-9._/-]+(:[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?@sha256:[a-f0-9]{64}$"},
+    "build": {
+      "type": "object", "additionalProperties": false, "required": ["context"],
+      "properties": {"context": {"type": "string"}, "dockerfile": {"type": "string"}}
+    },
+    "env": {"type": "object", "additionalProperties": {"type": "string"}, "propertyNames": {"pattern": "^[A-Za-z_][A-Za-z0-9_]*$"}},
+    "strings": {"type": "array", "items": {"type": "string"}},
+    "path": {"type": "string", "pattern": "^/[A-Za-z0-9._/-]*$"},
+    "container": {
+      "type": "object",
+      "properties": {
+        "build": {"$ref": "#/definitions/build"},
+        "image": {"$ref": "#/definitions/pinned"},
+        "command": {"$ref": "#/definitions/strings"},
+        "args": {"$ref": "#/definitions/strings"},
+        "env": {"$ref": "#/definitions/env"},
+        "secretEnv": {"type": "array", "items": {"$ref": "#/definitions/name"}}
+      }
+    }
+  },
+  "properties": {
+    "app": {"$ref": "#/definitions/name"},
+    "components": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"$ref": "#/definitions/name"},
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["uid", "memory"],
+        "oneOf": [{"required": ["build"]}, {"required": ["image"]}],
+        "properties": {
+          "build": {"$ref": "#/definitions/build"},
+          "image": {"$ref": "#/definitions/pinned"},
+          "port": {"type": "integer", "minimum": 1024, "maximum": 65535},
+          "uid": {"type": "integer", "minimum": 1},
+          "gid": {"type": "integer", "minimum": 1},
+          "memory": {"$ref": "#/definitions/quantity"},
+          "memoryRequest": {"$ref": "#/definitions/quantity"},
+          "cpu": {"$ref": "#/definitions/quantity"},
+          "health": {"$ref": "#/definitions/path"},
+          "command": {"$ref": "#/definitions/strings"},
+          "args": {"$ref": "#/definitions/strings"},
+          "env": {"$ref": "#/definitions/env"},
+          "secretEnv": {"type": "array", "items": {"$ref": "#/definitions/name"}},
+          "writable": {"type": "array", "items": {"$ref": "#/definitions/path"}},
+          "volumes": {"type": "object", "propertyNames": {"$ref": "#/definitions/name"}, "additionalProperties": {"$ref": "#/definitions/path"}},
+          "replicas": {"type": "integer", "minimum": 0, "maximum": 3},
+          "strategy": {"enum": ["RollingUpdate", "Recreate"]},
+          "migrate": {
+            "type": "object", "additionalProperties": false,
+            "oneOf": [{"required": ["build"]}, {"required": ["image"]}],
+            "properties": {
+              "build": {"$ref": "#/definitions/build"},
+              "image": {"$ref": "#/definitions/pinned"},
+              "command": {"$ref": "#/definitions/strings"},
+              "args": {"$ref": "#/definitions/strings"},
+              "env": {"$ref": "#/definitions/env"},
+              "memory": {"$ref": "#/definitions/quantity"}
+            }
+          }
+        }
+      }
+    },
+    "cron": {
+      "type": "object",
+      "propertyNames": {"$ref": "#/definitions/name"},
+      "additionalProperties": {
+        "type": "object", "additionalProperties": false,
+        "required": ["component", "schedule"],
+        "properties": {
+          "component": {"$ref": "#/definitions/name"},
+          "schedule": {"type": "string"},
+          "timeZone": {"type": "string"},
+          "command": {"$ref": "#/definitions/strings"},
+          "args": {"$ref": "#/definitions/strings"},
+          "memory": {"$ref": "#/definitions/quantity"}
+        }
+      }
+    },
+    "postgres": {
+      "type": "object", "additionalProperties": false,
+      "required": ["image", "memory"],
+      "properties": {
+        "image": {"$ref": "#/definitions/pinned"},
+        "uid": {"type": "integer", "minimum": 1},
+        "memory": {"$ref": "#/definitions/quantity"},
+        "cpu": {"$ref": "#/definitions/quantity"},
+        "mountPath": {"$ref": "#/definitions/path"},
+        "pgdata": {"$ref": "#/definitions/path"},
+        "secret": {"$ref": "#/definitions/name"},
+        "fresh": {"type": "boolean"},
+        "backup": {
+          "type": "object", "additionalProperties": false, "required": ["schedule"],
+          "properties": {
+            "schedule": {"type": "string"},
+            "timeZone": {"type": "string"},
+            "keep": {"type": "integer", "minimum": 1, "maximum": 30},
+            "uid": {"type": "integer", "minimum": 1}
+          }
+        }
+      }
+    },
+    "redis": {
+      "type": "object", "additionalProperties": false, "required": ["image", "memory"],
+      "properties": {
+        "image": {"$ref": "#/definitions/pinned"},
+        "uid": {"type": "integer", "minimum": 1},
+        "gid": {"type": "integer", "minimum": 1},
+        "memory": {"$ref": "#/definitions/quantity"},
+        "args": {"$ref": "#/definitions/strings"},
+        "secretEnv": {"type": "array", "items": {"$ref": "#/definitions/name"}}
+      }
+    },
+    "images": {
+      "description": "Set by vps-deploy.yml, never by hand: component (or <component>-migrate) → registry.internal/<app>/<image>:<sha>@<digest>.",
+      "type": "object", "additionalProperties": {"$ref": "#/definitions/pinned"}
+    },
+    "revision": {"type": "string", "description": "Set by vps-deploy.yml: the source commit."}
+  }
+}

@@ -1,0 +1,178 @@
+{{- with .Values.postgres }}
+{{- $pg := . }}
+{{- $uid := .uid | default 999 }}
+{{- $secret := .secret | default "postgres" }}
+---
+{{ include "vps.pvc" (dict "app" $.Values.app "volume" "postgres" "claim" "postgres-data") }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate                       # one server per data directory, never two
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      {{- include "vps.pod" (dict "uid" $uid "gid" $uid) | nindent 6 }}
+      # pause is PID 1 and reaps orphans (compose's init: true): an orphaned pg_isready that
+      # postgres itself reaped as PID 1 would count as a crashed backend.
+      shareProcessNamespace: true
+      terminationGracePeriodSeconds: 60
+      {{- if not .fresh }}
+      initContainers:
+        # Never initdb on a volume that should hold data: a PV whose PGDATA has no PG_VERSION (not
+        # copied yet, or the wrong path) stops here. A new app with no data sets postgres.fresh.
+        - name: guard
+          image: {{ .image }}
+          command: ["sh", "-c", 'test -s "$PGDATA/PG_VERSION" && exit 0; echo "refusing to start: $PGDATA holds no database (postgres.fresh is false)" >&2; exit 1']
+          {{- with .pgdata }}
+          env:
+            - {name: PGDATA, value: {{ . }}}
+          {{- end }}
+          {{- include "vps.container" . | nindent 10 }}
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 64Mi}
+          volumeMounts:
+            - {name: data, mountPath: {{ .mountPath | default "/var/lib/postgresql" }}}
+      {{- end }}
+      containers:
+        - name: postgres
+          image: {{ .image }}
+          env:
+            {{- with .pgdata }}
+            - {name: PGDATA, value: {{ . }}}
+            {{- end }}
+            - name: POSTGRES_USER
+              valueFrom: {secretKeyRef: {name: {{ $secret }}, key: POSTGRES_USER}}
+            - name: POSTGRES_PASSWORD
+              valueFrom: {secretKeyRef: {name: {{ $secret }}, key: POSTGRES_PASSWORD}}
+            - name: POSTGRES_DB
+              valueFrom: {secretKeyRef: {name: {{ $secret }}, key: POSTGRES_DB}}
+          ports:
+            - name: postgres
+              containerPort: 5432
+          {{- include "vps.container" . | nindent 10 }}
+          resources:
+            requests: {cpu: {{ .cpu | default "100m" }}, memory: {{ .memory }}}
+            limits: {memory: {{ .memory }}}          # Guaranteed memory, as every database
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", 'exec pg_isready -q -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"']
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", 'exec pg_isready -q -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"']
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 6
+          volumeMounts:
+            - {name: data, mountPath: {{ .mountPath | default "/var/lib/postgresql" }}}
+            - {name: run, mountPath: /var/run/postgresql}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: postgres-data}
+        - name: run
+          emptyDir: {sizeLimit: 16Mi}
+        - name: tmp
+          emptyDir: {sizeLimit: 256Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+spec:
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+{{- with .backup }}
+{{- $buid := .uid | default 1001 }}
+---
+{{ include "vps.pvc" (dict "app" $.Values.app "volume" "backups" "claim" "backups") }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backup-script
+data:
+  backup.sh: |
+    {{- $.Files.Get "files/backup.sh" | nindent 4 }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: backup
+  labels:
+    app: backup
+spec:
+  suspend: false                         # owned by Flux: a rollback's manual suspend is reset on the next apply
+  schedule: {{ .schedule | quote }}
+  timeZone: {{ .timeZone | default "Europe/Zurich" }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 2400        # backup.sh times pg_dump out after 1800 s
+      template:
+        metadata:
+          labels:
+            app: backup
+        spec:
+          restartPolicy: Never
+          {{- include "vps.pod" (dict "uid" $buid "gid" $buid) | nindent 10 }}
+          containers:
+            - name: backup
+              image: {{ $pg.image }}
+              command: ["bash", "/opt/backup/backup.sh", "once"]
+              env:
+                - {name: HOME, value: /tmp}
+                - {name: TZ, value: {{ .timeZone | default "Europe/Zurich" }}}
+                - {name: BACKUP_NAME, value: {{ $.Values.app }}}
+                - {name: BACKUP_KEEP, value: {{ .keep | default 3 | quote }}}
+                - {name: PGHOST, value: postgres}
+                - {name: PGPORT, value: "5432"}
+                - name: PGDATABASE
+                  valueFrom: {secretKeyRef: {name: {{ $secret }}, key: POSTGRES_DB}}
+                - name: PGUSER
+                  valueFrom: {secretKeyRef: {name: {{ $secret }}, key: POSTGRES_USER}}
+                - name: PGPASSWORD
+                  valueFrom: {secretKeyRef: {name: {{ $secret }}, key: POSTGRES_PASSWORD}}
+              {{- include "vps.container" . | nindent 14 }}
+              resources:
+                requests: {cpu: 10m, memory: 32Mi}
+                limits: {cpu: 500m, memory: 128Mi}
+              volumeMounts:
+                - {name: backups, mountPath: /backups}
+                - {name: script, mountPath: /opt/backup, readOnly: true}
+                - {name: tmp, mountPath: /tmp}
+          volumes:
+            - name: backups
+              persistentVolumeClaim: {claimName: backups}
+            - name: script
+              configMap: {name: backup-script, defaultMode: 0444}
+            - name: tmp
+              emptyDir: {sizeLimit: 64Mi}
+{{- end }}
+{{- end }}

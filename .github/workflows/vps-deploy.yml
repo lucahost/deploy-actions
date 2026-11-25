@@ -1,88 +1,50 @@
-name: Deploy an app to the VPS cluster
+name: Deploy an app to the VPS cluster (v2)
 
-# Reusable workflow, phase 2 of lucahost/vps-gitops (docs/design.md, "Bump flow"). The caller is the
-# app's source repo. Every credential is in that repo's GitHub Environment "vps", which only main
-# may use (deployment branch policy), and the job runs only for refs/heads/main: one set per app,
-# printed by `app-onboard.sh <app>` on the VPS. With them the job can push only to <app>/ in the
-# box registry, write only lucahost/vps-app-<app>, and call only that app's Receiver. Tailscale is
-# joined with workload identity (GitHub's OIDC token for that Environment), no long-lived secret.
-# Callers pin this file by commit SHA (README.md).
+# Reusable workflow for Onboarding v2 (lucahost/vps-gitops, docs/design.md "Onboarding v2"). The
+# caller is the app's source repo, which holds vps.yaml (and deploy/secrets/, deploy/extra/). No
+# deploy repo: the rendered manifests go to the box registry as an OCI artifact that Flux reads.
 #
-#   1. build each component on this GitHub runner (linux/amd64, one manifest per image)
-#   2. join the tailnet as tag:ci-deploy, which reaches only the VPS's :8446 (registry) and :8447
-#      (Receivers, deploy status); the Tailscale ACL in vps-gitops' docs/design.md
-#   3. push <registry>/<app>/<component>:<git sha> as the app's push user; read back the digest
-#   4. commit the digest-pinned bump to lucahost/vps-app-<app> with that repo's write deploy key
-#   5. call the app's Flux Receiver (HMAC-signed): Flux fetches at once instead of at its 10-min poll
-#   6. wait until Flux applied that commit and the workloads are healthy (GET /status/<app>, which
-#      returns Flux's Kustomization <app>); fail the job if it fails or doesn't converge in time
-#   With publish-only (before an app's cutover) the job stops after 4: the digests are in the deploy
-#   repo, but Flux doesn't run the app yet.
+#   1. build the components vps.yaml names (and their migrate images) on this runner
+#   2. join the tailnet as tag:ci-deploy: one federated identity for every lucahost repo, bound to
+#      this file (job_workflow_ref), main and Environment vps
+#   3. push registry.internal/<app>/<image>:<sha> as the app's own registry user; read the digests
+#   4. render vps.yaml with vps/chart (this commit), pack it with deploy/secrets and deploy/extra
+#   5. push the artifact <app>/manifests:<sha>
+#   6. if <app>/manifests:live exists (the app is switched over: `vps cutover` created it), move live
+#      to this artifact, call the app's Receiver and wait until Flux applied it and it is healthy.
+#      Otherwise stop: the app still runs on its old deploy, and the cutover activates a
+#      published artifact.
 #
-# Steps read only env (never ${{ }} inside a script), so .github/workflows/vps-deploy-selftest.yml
-# can run these exact scripts against a local registry, git repo and Receiver.
+# Credentials: two secrets in the caller's Environment "vps" (main only), VPS_REGISTRY_PASSWORD and
+# VPS_RECEIVER_TOKEN, passed with `secrets: inherit`. Everything else is a default here: the
+# tailnet host, the registry user (= the app), the Receiver path (derived from its token), and the
+# Tailscale identity. Steps read only env (never ${{ }} inside a script), so test/vps-deploy/selftest.sh
+# runs these exact scripts against a local registry and a fake Flux.
 
 on:
   workflow_call:
     inputs:
-      app:
-        description: The app's name on the VPS (its namespace, registry path and deploy repo vps-app-<app>)
-        required: true
-        type: string
-      components:
-        description: >-
-          One per line: <image>=<build context>[:<Dockerfile>]. "hello=smoke" builds ./smoke/Dockerfile
-          into registry.internal/<app>/hello; "api=.:backend/Dockerfile" builds the repo root.
-        required: true
-        type: string
-      build-args:
-        description: Build arguments for every component, one KEY=value per line (no secrets). GIT_SHA is always set.
+      file:
+        description: The app's vps.yaml (a repo deploying several apps has vps/<app>.yaml files)
         required: false
         type: string
-        default: ""
+        default: vps.yaml
       wait-seconds:
-        description: How long Flux may take to apply the commit and get the workloads healthy
+        description: How long Flux may take to apply the artifact and get the workloads healthy
         required: false
         type: number
-        default: 300
-      publish-only:
-        description: >-
-          Before the app's cutover: build, push and bump lucahost/vps-app-<app> only. Flux doesn't run
-          the app yet (its Kustomization comes with the cutover), so the Receiver isn't called and
-          nothing is waited for; the app's old deploy keeps serving it (dual-publish, vps-gitops
-          docs/runbooks/README.md). The cutover only has to apply digests that are already there.
-        required: false
-        type: boolean
-        default: false
-      tailscale-tag:
-        description: The tag the runner joins the tailnet with (the ACL lets it reach only :8446 and :8447)
-        required: false
-        type: string
-        default: tag:ci-deploy
-    # The job reads the caller's Environment "vps" (secrets VPS_REGISTRY, VPS_REGISTRY_USER,
-    # VPS_REGISTRY_PASSWORD, VPS_RECEIVER_URL, VPS_RECEIVER_TOKEN, VPS_APP_DEPLOY_KEY; variables
-    # TS_OIDC_CLIENT_ID, TS_OIDC_AUDIENCE). The caller passes them with `secrets: inherit`: GitHub
-    # hands a called workflow only the secrets its caller passes, Environment secrets included,
-    # even when the called job names the Environment (without it they are silently empty). The
-    # calling repos keep no repository or organisation secrets, so inherit carries only these.
+        default: 420
     outputs:
-      bump-sha:
-        description: The deploy-repo commit Flux applied
-        value: ${{ jobs.deploy.outputs.bump-sha }}
-      images:
-        description: The images that now run, one per line
-        value: ${{ jobs.deploy.outputs.images }}
+      artifact:
+        description: The artifact this run pushed, <app>/manifests:<sha>@<digest>
+        value: ${{ jobs.deploy.outputs.artifact }}
 
 permissions:
   contents: read
 
 jobs:
   deploy:
-    name: Deploy ${{ inputs.app }}
-    # main only, and only for a push to main or a dispatch on main: the Environment's deployment
-    # branch policy enforces the branch (a branch or a dispatch from one gets no secrets and no
-    # tailnet identity); this guard also keeps out callers that run with ref=main for other events
-    # (pull_request_target, workflow_run, schedule), before the job asks for anything.
+    name: Deploy to the VPS cluster
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     environment: vps
     permissions:
@@ -90,216 +52,202 @@ jobs:
       id-token: write          # the OIDC token Tailscale's workload identity checks
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    # One deploy per app at a time, in order (a newer run waits; it doesn't cancel the running one).
     concurrency:
-      group: vps-deploy-${{ inputs.app }}
+      group: vps-deploy-${{ github.repository }}-${{ inputs.file }}
       cancel-in-progress: false
     outputs:
-      bump-sha: ${{ steps.bump.outputs.bump-sha }}
-      images: ${{ steps.push.outputs.images }}
+      artifact: ${{ steps.publish.outputs.artifact }}
     env:
-      APP: ${{ inputs.app }}
+      FILE: ${{ inputs.file }}
       SHA: ${{ github.sha }}
       SOURCE_REPO: ${{ github.repository }}
       RUN_ID: ${{ github.run_id }}
-      DEPLOY_REPO_URL: ssh://git@github.com/lucahost/vps-app-${{ inputs.app }}.git
-      KUSTOMIZE_VERSION: 5.4.3
-      KUSTOMIZE_SHA256: 3669470b454d865c8184d6bce78df05e977c9aea31c30df3c669317d43bcc7a7   # linux_amd64.tar.gz
+      VPS_HOST: hetzner-ubuntu-16gb.zuul-stonecat.ts.net
+      REGISTRY_PORT: "8446"
+      HOOK_PORT: "8447"
+      # The one federated identity of docs/design.md (owner's one-time step 1); not secrets.
+      TS_OIDC_CLIENT_ID: TMABUofcLG11CNTRL-ktb1epw53B11CNTRL
+      TS_OIDC_AUDIENCE: api.tailscale.com/TMABUofcLG11CNTRL-ktb1epw53B11CNTRL
+      FLUX_VERSION: 2.9.6
+      FLUX_SHA256: b4d22673e9246cbd628881f1a9ef3b090085dced291e42d804555cee8e8d42c5   # linux_amd64.tar.gz
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Check inputs and secrets
         id: check
         env:
-          COMPONENTS: ${{ inputs.components }}
-          # Whether each one reached this job (true/false, never a value). An Environment secret
-          # reaches a called workflow only if the caller passes secrets (secrets: inherit), even
-          # though this job names the Environment; without it every one is silently empty.
-          SET_TS_OIDC_CLIENT_ID: ${{ vars.TS_OIDC_CLIENT_ID != '' }}
-          SET_TS_OIDC_AUDIENCE: ${{ vars.TS_OIDC_AUDIENCE != '' }}
-          SET_VPS_REGISTRY: ${{ secrets.VPS_REGISTRY != '' }}
-          SET_VPS_REGISTRY_USER: ${{ secrets.VPS_REGISTRY_USER != '' }}
           SET_VPS_REGISTRY_PASSWORD: ${{ secrets.VPS_REGISTRY_PASSWORD != '' }}
-          SET_VPS_RECEIVER_URL: ${{ secrets.VPS_RECEIVER_URL != '' }}
           SET_VPS_RECEIVER_TOKEN: ${{ secrets.VPS_RECEIVER_TOKEN != '' }}
-          SET_VPS_APP_DEPLOY_KEY: ${{ secrets.VPS_APP_DEPLOY_KEY != '' }}
         run: |
-          [[ "$APP" =~ ^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$ ]] || { echo "::error::bad app name '$APP'"; exit 1; }
+          [ -f "$FILE" ] || { echo "::error::no $FILE in this repo"; exit 1; }
+          app=$(yq -r '.app // ""' "$FILE")
+          [[ "$app" =~ ^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$ ]] || { echo "::error::$FILE: bad or missing app '$app'"; exit 1; }
           missing=""
-          for v in TS_OIDC_CLIENT_ID TS_OIDC_AUDIENCE VPS_REGISTRY VPS_REGISTRY_USER VPS_REGISTRY_PASSWORD \
-                   VPS_RECEIVER_URL VPS_RECEIVER_TOKEN VPS_APP_DEPLOY_KEY; do
+          for v in VPS_REGISTRY_PASSWORD VPS_RECEIVER_TOKEN; do
             set_var="SET_$v"; [ "${!set_var:-}" = true ] || missing+=" $v"
           done
-          if [ -n "$missing" ]; then
-            echo "::error::empty in this job:$missing. They belong in the Environment vps of the calling repo (vps-gitops README, phase 2, steps 2 and 6), and the caller must pass them with 'secrets: inherit' (deploy-actions README)."
-            exit 1
-          fi
-          n=0
-          while IFS= read -r line; do
-            line=${line//[[:space:]]/}; [ -n "$line" ] || continue
-            [[ "$line" =~ ^[a-z0-9]+([._-][a-z0-9]+)*=[A-Za-z0-9._/-]+(:[A-Za-z0-9._/-]+)?$ ]] \
-              || { echo "::error::bad component line '$line' (want <image>=<context>[:<Dockerfile>])"; exit 1; }
-            n=$((n + 1))
-          done <<<"$COMPONENTS"
-          [ "$n" -gt 0 ] || { echo "::error::no components"; exit 1; }
-          echo "t_start=$(date +%s)" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (runs with the secrets in the job: pinned)
-        with:
-          persist-credentials: false
+          [ -z "$missing" ] || { echo "::error::empty in this job:$missing (Environment vps of this repo, passed with secrets: inherit; vps-onboard sets them)"; exit 1; }
+          [ -n "$TS_OIDC_CLIENT_ID" ] && [ -n "$TS_OIDC_AUDIENCE" ] || [ "${VPS_DEPLOY_SELFTEST:-}" = 1 ] \
+            || { echo "::error::vps-deploy.yml has no Tailscale identity yet (the owner's one-time step 1, then set TS_OIDC_* here)"; exit 1; }
+          { echo "app=$app"; echo "t_start=$(date +%s)"; } >> "$GITHUB_OUTPUT"
 
       - name: Build
         id: build
         env:
-          COMPONENTS: ${{ inputs.components }}
-          BUILD_ARGS: ${{ inputs.build-args }}
+          APP: ${{ steps.check.outputs.app }}
         run: |
-          args=(--build-arg "GIT_SHA=$SHA")
-          while IFS= read -r a; do [ -n "${a// /}" ] && args+=(--build-arg "$a"); done <<<"$BUILD_ARGS"
-          while IFS= read -r line; do
-            line=${line//[[:space:]]/}; [ -n "$line" ] || continue
-            name=${line%%=*}; rest=${line#*=}; ctx=${rest%%:*}; file="$ctx/Dockerfile"
-            [[ "$rest" == *:* ]] && file=${rest#*:}
+          # FILE: the job's env. One image per component with build:, and one per migrate with build:. Names: <component>,
+          # <component>-migrate. Components with image: run a pinned third-party image (allowlisted).
+          # shellcheck disable=SC2153  # FILE comes from the job's env
+          # yq only converts; jq selects (yq's `,` inside a pipe dropped the migrate builds).
+          builds=$(yq -o=json '.' "$FILE" | jq -c '[.components | to_entries[] | (select(.value.build) | {name: .key, b: .value.build}), (select(.value.migrate.build) | {name: (.key + "-migrate"), b: .value.migrate.build})]')
+          n=$(jq length <<<"$builds")
+          for i in $(seq 0 $((n - 1))); do
+            name=$(jq -r ".[$i].name" <<<"$builds"); ctx=$(jq -r ".[$i].b.context" <<<"$builds")
+            file=$(jq -r ".[$i].b.dockerfile // empty" <<<"$builds"); file=${file:-$ctx/Dockerfile}
+            [[ "$name" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || { echo "::error::bad image name $name"; exit 1; }
             echo "::group::$name ← $ctx ($file)"
             docker buildx build --platform linux/amd64 --provenance=false --sbom=false --load \
               --label "org.opencontainers.image.revision=$SHA" --label "org.opencontainers.image.source=https://github.com/$SOURCE_REPO" \
-              "${args[@]}" -f "$file" -t "vps-deploy/$APP/$name:$SHA" "$ctx"
+              --build-arg "GIT_SHA=$SHA" -f "$file" -t "vps-app/$APP/$name:$SHA" "$ctx"
             echo "::endgroup::"
-          done <<<"$COMPONENTS"
-          echo "t_built=$(date +%s)" >> "$GITHUB_OUTPUT"
+          done
+          { echo "names=$(jq -c '[.[].name]' <<<"$builds")"; echo "t_built=$(date +%s)"; } >> "$GITHUB_OUTPUT"
 
       - name: Join the tailnet (tag:ci-deploy reaches only :8446 and :8447 on the VPS)
-        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0 (gets the job's OIDC token: pinned)
+        if: ${{ env.TS_OIDC_CLIENT_ID != '' }}
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
         with:
-          # Workload identity: Tailscale trusts GitHub's OIDC token for this repo's Environment vps
-          # (subject repo:<owner>/<repo>:environment:vps) and lets it join only as tag:ci-deploy.
-          oauth-client-id: ${{ vars.TS_OIDC_CLIENT_ID }}
-          audience: ${{ vars.TS_OIDC_AUDIENCE }}
-          tags: ${{ inputs.tailscale-tag }}
+          oauth-client-id: ${{ env.TS_OIDC_CLIENT_ID }}
+          audience: ${{ env.TS_OIDC_AUDIENCE }}
+          tags: tag:ci-deploy
 
       - name: Resolve the VPS on the tailnet
-        env:
-          VPS_REGISTRY: ${{ secrets.VPS_REGISTRY }}
+        if: ${{ env.TS_OIDC_CLIENT_ID != '' }}
         run: |
-          # TLS (tailscale serve's certificate) needs the VPS's tailnet name; pin it to the peer's IP
-          # rather than rely on MagicDNS on the runner.
-          host=${VPS_REGISTRY%%:*}
-          ip=$(sudo tailscale status --json | jq -r --arg h "$host." '[.Peer[] | select(.DNSName == $h) | .TailscaleIPs[0]][0] // empty')
-          [ -n "$ip" ] || { echo "::error::$host isn't a peer this runner can see (Tailscale ACL for the tag?)"; exit 1; }
-          echo "$ip $host" | sudo tee -a /etc/hosts >/dev/null
-          echo "$host → $ip"
+          ip=$(sudo tailscale status --json | jq -r --arg h "$VPS_HOST." '[.Peer[] | select(.DNSName == $h) | .TailscaleIPs[0]][0] // empty')
+          [ -n "$ip" ] || { echo "::error::$VPS_HOST isn't a peer this runner can see (Tailscale ACL for the tag?)"; exit 1; }
+          echo "$ip $VPS_HOST" | sudo tee -a /etc/hosts >/dev/null
 
-      - name: Push as ${{ inputs.app }}'s registry user
+      - name: Push the images as the app's registry user
         id: push
         env:
-          COMPONENTS: ${{ inputs.components }}
-          VPS_REGISTRY: ${{ secrets.VPS_REGISTRY }}
-          VPS_REGISTRY_USER: ${{ secrets.VPS_REGISTRY_USER }}
+          APP: ${{ steps.check.outputs.app }}
+          NAMES: ${{ steps.build.outputs.names }}
           VPS_REGISTRY_PASSWORD: ${{ secrets.VPS_REGISTRY_PASSWORD }}
           REGISTRY_SCHEME: https
         run: |
-          # The box registry (zot) takes OCI manifests only: skopeo converts the image the build
-          # loaded into Docker. The credentials go through a 0600 auth file, not the command line.
           command -v skopeo >/dev/null || sudo NEEDRESTART_MODE=l DEBIAN_FRONTEND=noninteractive apt-get install -y skopeo >/dev/null
+          reg="${REGISTRY_HOST:-$VPS_HOST:$REGISTRY_PORT}"
           work=$(mktemp -d)
-          # (the credentials reach jq through its environment, not its argv)
-          ( umask 077; AUTH=$(printf '%s:%s' "$VPS_REGISTRY_USER" "$VPS_REGISTRY_PASSWORD" | base64 -w0) \
-              jq -n --arg r "$VPS_REGISTRY" '{auths: {($r): {auth: $ENV.AUTH}}}' > "$work/auth.json" )
+          ( umask 077; AUTH=$(printf '%s:%s' "$APP" "$VPS_REGISTRY_PASSWORD" | base64 -w0) \
+              jq -n --arg r "$reg" '{auths: {($r): {auth: $ENV.AUTH}}}' > "$work/auth.json" )
           tls=(); [ "$REGISTRY_SCHEME" = https ] || tls=(--dest-tls-verify=false)
           accept='application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json'
-          images=""
-          while IFS= read -r line; do
-            line=${line//[[:space:]]/}; [ -n "$line" ] || continue
-            name=${line%%=*}; ref="$VPS_REGISTRY/$APP/$name:$SHA"
+          images='{}'
+          for name in $(jq -r '.[]' <<<"$NAMES"); do
             skopeo copy --quiet --format oci --authfile "$work/auth.json" "${tls[@]}" \
-              "docker-daemon:vps-deploy/$APP/$name:$SHA" "docker://$ref"
-            # The digest the registry serves for that tag is what Flux and containerd will pull.
-            digest=$(printf 'user = "%s:%s"\n' "$VPS_REGISTRY_USER" "$VPS_REGISTRY_PASSWORD" \
-              | curl -fsS --max-time 30 -K - -I -H "Accept: $accept" "$REGISTRY_SCHEME://$VPS_REGISTRY/v2/$APP/$name/manifests/$SHA" \
+              "docker-daemon:vps-app/$APP/$name:$SHA" "docker://$reg/$APP/$name:$SHA"
+            digest=$(printf 'user = "%s:%s"\n' "$APP" "$VPS_REGISTRY_PASSWORD" \
+              | curl -fsS --max-time 30 -K - -I -H "Accept: $accept" "$REGISTRY_SCHEME://$reg/v2/$APP/$name/manifests/$SHA" \
               | tr -d '\r' | awk 'tolower($1) == "docker-content-digest:" {print $2}')
-            [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "::error::no digest for $ref"; exit 1; }
-            echo "pushed $ref → $digest"
-            images+="registry.internal/$APP/$name:$SHA@$digest"$'\n'
-          done <<<"$COMPONENTS"
+            [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "::error::no digest for $APP/$name:$SHA"; exit 1; }
+            echo "pushed $APP/$name:$SHA → $digest"
+            images=$(jq -c --arg k "$name" --arg v "registry.internal/$APP/$name:$SHA@$digest" '. + {($k): $v}' <<<"$images")
+          done
           rm -rf "$work"
-          { echo "images<<EOF"; printf '%s' "$images"; echo "EOF"; echo "t_pushed=$(date +%s)"; } >> "$GITHUB_OUTPUT"
+          { echo "images=$images"; echo "t_pushed=$(date +%s)"; } >> "$GITHUB_OUTPUT"
 
-      - name: Bump lucahost/vps-app-${{ inputs.app }}
-        id: bump
+      - name: Render and pack
+        id: render
+        # The chart and scripts of the deploy-actions commit below. test/vps-deploy/structure.py checks that
+        # vps/ at that commit is vps/ at this file's commit (bump both together).
+        uses: lucahost/deploy-actions/vps@7b3cb8d6be1e2de577afb1f251d1cd2282a2b7d6 # vps render and pack
+        with:
+          file: ${{ inputs.file }}
+          images: ${{ steps.push.outputs.images }}
+          revision: ${{ github.sha }}
+          out: ${{ runner.temp }}/artifact
+
+      - name: Push the artifact
+        id: publish
         env:
-          IMAGES: ${{ steps.push.outputs.images }}
-          VPS_APP_DEPLOY_KEY: ${{ secrets.VPS_APP_DEPLOY_KEY }}
-          GH_API_TOKEN: ${{ github.token }}
+          APP: ${{ steps.check.outputs.app }}
+          VPS_REGISTRY_PASSWORD: ${{ secrets.VPS_REGISTRY_PASSWORD }}
+          FLUX_INSECURE: ""
         run: |
           work=$(mktemp -d)
-          # kustomize, pinned by its sha256 (it runs next to the deploy key)
-          k="https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}"
-          curl -fsSL -o "$work/kustomize.tgz" "$k/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
-          echo "$KUSTOMIZE_SHA256  $work/kustomize.tgz" | sha256sum -c - >/dev/null
-          tar -xzf "$work/kustomize.tgz" -C "$work" kustomize
-          # The write deploy key (this repo only) and GitHub's host keys from its API (TLS).
-          ( umask 077; printf '%s\n' "$VPS_APP_DEPLOY_KEY" > "$work/deploy_key" )
-          auth=""; [ -n "${GH_API_TOKEN:-}" ] && auth="header = \"Authorization: Bearer $GH_API_TOKEN\""
-          printf '%s\n' "$auth" | curl -fsS --max-time 20 -K - https://api.github.com/meta \
-            | jq -er '.ssh_keys[] | "github.com " + .' > "$work/known_hosts"
-          export GIT_SSH_COMMAND="ssh -i $work/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=$work/known_hosts -o StrictHostKeyChecking=yes"
-          git clone --quiet --depth 1 --branch main "$DEPLOY_REPO_URL" "$work/deploy"
-          cd "$work/deploy" || exit 1
-          names=""
-          while IFS= read -r img; do
-            [ -n "$img" ] || continue
-            "$work/kustomize" edit set image "$img"
-            n=${img%%@*}; n=${n%:*}; names+="${n##*/} "
-          done <<<"$IMAGES"
-          git config user.name "vps-deploy ($SOURCE_REPO)"
-          git config user.email "vps-deploy@users.noreply.github.com"
-          if git diff --quiet; then
-            echo "nothing to bump: $DEPLOY_REPO_URL already runs these digests"
-            changed=false
-          else
-            git commit --quiet -am "deploy($APP): ${names% } ${SHA:0:7} ($SOURCE_REPO@${SHA:0:7}, run $RUN_ID)"
-            # Only this app's CI writes this repo; a rejected push means the owner pushed meanwhile.
-            for try in 1 2 3; do
-              if git push --quiet origin HEAD:main; then break; fi
-              [ "$try" = 3 ] && { echo "::error::push to the deploy repo failed three times"; exit 1; }
-              git pull --quiet --rebase origin main
-            done
-            changed=true
+          if ! command -v flux >/dev/null || ! flux version --client 2>/dev/null | grep -q "$FLUX_VERSION"; then
+            curl -fsSL -o "$work/flux.tgz" "https://github.com/fluxcd/flux2/releases/download/v$FLUX_VERSION/flux_${FLUX_VERSION}_linux_amd64.tar.gz"
+            echo "$FLUX_SHA256  $work/flux.tgz" | sha256sum -c - >/dev/null
+            tar -xzf "$work/flux.tgz" -C "$work" flux
+            sudo install -m 0755 "$work/flux" /usr/local/bin/flux
           fi
-          echo "bump commit $(git rev-parse HEAD): $(git log -1 --format=%s)"
-          { echo "bump-sha=$(git rev-parse HEAD)"; echo "changed=$changed"; echo "t_bumped=$(date +%s)"; } >> "$GITHUB_OUTPUT"
-          cd /; rm -rf "$work"
+          reg="${REGISTRY_HOST:-$VPS_HOST:$REGISTRY_PORT}"
+          export DOCKER_CONFIG=$work/docker
+          ( umask 077; install -d "$DOCKER_CONFIG"; AUTH=$(printf '%s:%s' "$APP" "$VPS_REGISTRY_PASSWORD" | base64 -w0) \
+              jq -n --arg r "$reg" '{auths: {($r): {auth: $ENV.AUTH}}}' > "$DOCKER_CONFIG/config.json" )
+          insecure=(); [ -z "$FLUX_INSECURE" ] || insecure=(--insecure-registry)
+          out=$(flux push artifact "oci://$reg/$APP/manifests:$SHA" --path "$RUNNER_TEMP/artifact" \
+                  --source "https://github.com/$SOURCE_REPO" --revision "main@sha1:$SHA" "${insecure[@]}" 2>&1) \
+            || { echo "$out"; echo "::error::flux push artifact failed"; exit 1; }
+          digest=$(grep -oE 'sha256:[a-f0-9]{64}' <<<"$out" | tail -1)
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "$out"; echo "::error::no digest from flux push artifact"; exit 1; }
+          echo "pushed $APP/manifests:$SHA ($digest)"
+          # Switched over? The cutover created live; until then this run only publishes.
+          code=$(printf 'user = "%s:%s"\n' "$APP" "$VPS_REGISTRY_PASSWORD" | curl -s -o /dev/null -w '%{http_code}' --max-time 20 -K - -I \
+            -H 'Accept: application/vnd.oci.image.manifest.v1+json' "${REGISTRY_SCHEME:-https}://$reg/v2/$APP/manifests/manifests/live")
+          case "$code" in
+            200) live=true
+                 # Moving a tag is the distribution API itself: this artifact's manifest, byte for byte,
+                 # PUT under "live" (flux tag artifact has no flag for the self-test's plain-HTTP registry).
+                 mt=application/vnd.oci.image.manifest.v1+json
+                 if ! printf 'user = "%s:%s"\n' "$APP" "$VPS_REGISTRY_PASSWORD" | curl -fsS --max-time 30 -K - -H "Accept: $mt" \
+                        -o "$work/manifest.json" "${REGISTRY_SCHEME:-https}://$reg/v2/$APP/manifests/manifests/$digest" \
+                    || ! printf 'user = "%s:%s"\n' "$APP" "$VPS_REGISTRY_PASSWORD" | curl -fsS --max-time 30 -K - -X PUT -H "Content-Type: $mt" \
+                        --data-binary @"$work/manifest.json" -o /dev/null "${REGISTRY_SCHEME:-https}://$reg/v2/$APP/manifests/manifests/live"; then
+                   echo "::error::couldn't move live"; exit 1
+                 fi
+                 echo "live → $SHA ($digest)";;
+            404) live=false; echo "no live tag: $APP isn't switched over yet, so this run only publishes";;
+            *)   echo "::error::registry answered $code for $APP/manifests:live"; exit 1;;
+          esac
+          rm -rf "$work"
+          { echo "artifact=$APP/manifests:$SHA@$digest"; echo "digest=$digest"; echo "live=$live"; echo "t_published=$(date +%s)"; } >> "$GITHUB_OUTPUT"
 
-      - name: Call ${{ inputs.app }}'s Flux Receiver
+      - name: Call the app's Flux Receiver
         id: notify
-        if: ${{ !inputs.publish-only }}
+        if: ${{ steps.publish.outputs.live == 'true' }}
         env:
-          BUMP_SHA: ${{ steps.bump.outputs.bump-sha }}
-          VPS_RECEIVER_URL: ${{ secrets.VPS_RECEIVER_URL }}
+          APP: ${{ steps.check.outputs.app }}
           VPS_RECEIVER_TOKEN: ${{ secrets.VPS_RECEIVER_TOKEN }}
         run: |
           work=$(mktemp -d)
-          jq -cn --arg app "$APP" --arg repo "$SOURCE_REPO" --arg sha "$SHA" --arg bump "$BUMP_SHA" --arg run "$RUN_ID" \
-            '{app: $app, repo: $repo, sha: $sha, bump: $bump, run: $run}' | tr -d '\n' > "$work/body.json"
           ( umask 077; printf '%s' "$VPS_RECEIVER_TOKEN" > "$work/key" )
+          # Flux's path: sha256(token + Receiver name + namespace).
+          hook=$(printf '%s%s%s' "$(cat "$work/key")" "receiver-$APP" flux-system | sha256sum | cut -d' ' -f1)
+          url="${HOOK_BASE:-https://$VPS_HOST:$HOOK_PORT}/hook/$hook"
+          jq -cn --arg app "$APP" --arg repo "$SOURCE_REPO" --arg sha "$SHA" --arg run "$RUN_ID" \
+            '{app: $app, repo: $repo, sha: $sha, run: $run}' | tr -d '\n' > "$work/body.json"
           sig=$(python3 -I -c 'import hashlib, hmac, sys
           print(hmac.new(open(sys.argv[1], "rb").read(), open(sys.argv[2], "rb").read(), hashlib.sha256).hexdigest())' "$work/key" "$work/body.json")
           code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 --retry 3 --retry-all-errors -X POST \
-            -H 'Content-Type: application/json' -H "X-Signature: sha256=$sig" --data-binary @"$work/body.json" "$VPS_RECEIVER_URL")
+            -H 'Content-Type: application/json' -H "X-Signature: sha256=$sig" --data-binary @"$work/body.json" "$url")
           rm -rf "$work"
           [ "$code" = 200 ] || { echo "::error::the Receiver answered $code"; exit 1; }
-          echo "Receiver: 200 (Flux fetches lucahost/vps-app-$APP now)"
           echo "t_notified=$(date +%s)" >> "$GITHUB_OUTPUT"
 
-      - name: Wait until Flux applied it and ${{ inputs.app }} is healthy
+      - name: Wait until Flux applied it and the app is healthy
         id: wait
-        if: ${{ !inputs.publish-only }}
+        if: ${{ steps.publish.outputs.live == 'true' }}
         env:
-          BUMP_SHA: ${{ steps.bump.outputs.bump-sha }}
-          VPS_RECEIVER_URL: ${{ secrets.VPS_RECEIVER_URL }}
+          APP: ${{ steps.check.outputs.app }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
           WAIT_SECONDS: ${{ inputs.wait-seconds }}
         run: |
-          # GET /status/<app> next to the Receivers returns Flux's Kustomization <app>. With wait:
-          # true, Ready means everything it applied is healthy (rollouts finished).
-          status_url="${VPS_RECEIVER_URL%%/hook/*}/status/$APP"
+          status_url="${HOOK_BASE:-https://$VPS_HOST:$HOOK_PORT}/status/$APP"
           deadline=$(( $(date +%s) + WAIT_SECONDS )); last=""
           while :; do
             json=$(curl -fsS --max-time 10 "$status_url" 2>/dev/null || true)
@@ -307,53 +255,44 @@ jobs:
             read -r applied attempted ready reason < <(jq -r '[.status.lastAppliedRevision // "-", .status.lastAttemptedRevision // "-",
               ([(.status.conditions // [])[] | select(.type == "Ready")][0] | (.status // "-"), (.reason // "-"))] | @tsv' <<<"$json")
             msg=$(jq -r '[(.status.conditions // [])[] | select(.type == "Ready")][0].message // ""' <<<"$json")
-            now="Ready=$ready ($reason), applied ${applied##*:}"
+            now="Ready=$ready ($reason), applied ${applied}"
             [ "$now" = "$last" ] || { echo "$(date +%T) $now"; last=$now; }
-            if [[ "$applied" == *"$BUMP_SHA" ]] && [ "$ready" = True ]; then break; fi
-            if [[ "$attempted" == *"$BUMP_SHA" ]] && [ "$ready" = False ] && [ "$reason" != Progressing ]; then
-              echo "::error::Flux couldn't apply ${BUMP_SHA:0:7}: $msg"; exit 1
+            # An OCI source's revision is "<tag>@sha256:<digest>": live, at this run's artifact.
+            if [[ "$applied" == *"@$DIGEST" ]] && [ "$ready" = True ]; then break; fi
+            if [[ "$attempted" == *"@$DIGEST" ]] && [ "$ready" = False ] && [ "$reason" != Progressing ]; then
+              echo "::error::Flux couldn't apply it: $msg"; exit 1
             fi
-            if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "::error::not applied and healthy after ${WAIT_SECONDS}s (last: $now; $msg)"; exit 1
-            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then echo "::error::not applied and healthy after ${WAIT_SECONDS}s (last: $now; $msg)"; exit 1; fi
             sleep 3
           done
-          echo "live: lucahost/vps-app-$APP@${BUMP_SHA:0:7} applied, Ready"
+          echo "live: $APP@${SHA:0:7} applied, Ready"
           echo "t_live=$(date +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Summary
+        id: summary
         if: always()
         env:
+          APP: ${{ steps.check.outputs.app }}
+          LIVE: ${{ steps.publish.outputs.live }}
+          ARTIFACT: ${{ steps.publish.outputs.artifact }}
+          IMAGES: ${{ steps.push.outputs.images }}
           T_START: ${{ steps.check.outputs.t_start }}
           T_BUILT: ${{ steps.build.outputs.t_built }}
           T_PUSHED: ${{ steps.push.outputs.t_pushed }}
-          T_BUMPED: ${{ steps.bump.outputs.t_bumped }}
-          T_NOTIFIED: ${{ steps.notify.outputs.t_notified }}
+          T_PUBLISHED: ${{ steps.publish.outputs.t_published }}
           T_LIVE: ${{ steps.wait.outputs.t_live }}
-          IMAGES: ${{ steps.push.outputs.images }}
-          BUMP_SHA: ${{ steps.bump.outputs.bump-sha }}
-          PUBLISH_ONLY: ${{ inputs.publish-only }}
         run: |
           d() { [ -n "$1" ] && [ -n "$2" ] && echo "$(( $2 - $1 )) s" || echo "–"; }
-          committed=$(git log -1 --format=%ct "$SHA" 2>/dev/null || true)
           {
             echo "### $APP → VPS"
             echo
-            echo "| step | time |"
-            echo "|---|---|"
+            echo "| step | time |"; echo "|---|---|"
             echo "| build | $(d "$T_START" "$T_BUILT") |"
-            echo "| tailnet + push + digest | $(d "$T_BUILT" "$T_PUSHED") |"
-            echo "| bump vps-app-$APP | $(d "$T_PUSHED" "$T_BUMPED") |"
-            echo "| Receiver | $(d "$T_BUMPED" "$T_NOTIFIED") |"
-            echo "| Flux applied + healthy | $(d "$T_NOTIFIED" "$T_LIVE") |"
+            echo "| push images | $(d "$T_BUILT" "$T_PUSHED") |"
+            echo "| render, pack, push artifact | $(d "$T_PUSHED" "$T_PUBLISHED") |"
+            echo "| Flux applied + healthy | $(d "$T_PUBLISHED" "$T_LIVE") |"
             echo "| **job start → live** | **$(d "$T_START" "$T_LIVE")** |"
-            echo "| **commit → live** | **$(d "$committed" "$T_LIVE")** |"
             echo
-            echo "Deploy commit: \`${BUMP_SHA:-–}\`"
-            if [ "$PUBLISH_ONLY" = true ]; then
-              echo
-              echo "**Published only** (publish-only): pushed and bumped; Flux doesn't run $APP yet, so no Receiver call and no wait."
-            fi
-            echo
-            echo '```'; printf '%s' "${IMAGES:-–}"; echo '```'
+            echo "Artifact: \`${ARTIFACT:-–}\`"
+            [ "$LIVE" = true ] || { echo; echo "**Published only**: no \`live\` tag yet, so the app isn't switched over and nothing was applied."; }
           } >> "$GITHUB_STEP_SUMMARY"
