@@ -62,7 +62,20 @@ besides that Environment's, since `inherit` would carry them too.
 with `vps-deploy.yml` (`smoke/vps.yaml`; vps-gitops `tenants/smoke.yaml`): a merge that touches it,
 `vps/` or `vps-deploy.yml` publishes it, and once smoke is switched over (`sudo vps cutover smoke`)
 deploys it to the VPS. `vps-deploy-selftest.yml` runs the workflow's own step scripts against a
-local registry and a fake Flux on every PR.
+local registry and a fake Flux on every PR that touches the workflows, `vps/`, `test/vps-deploy/`
+or `smoke/`.
+
+### CI budget
+
+Actions minutes are the owner's own and limited; a job is billed in whole minutes.
+
+- Docs-only PRs run nothing. The self-test (≈1 minute) runs once per push to a PR that touches
+  what it tests, not again on main after the merge. A newer push cancels the run still going.
+- `smoke.yml` runs on main only, for merges that touch `smoke/`, `vps/` or the two workflows,
+  and deploys for real (never cancelled halfway).
+- Batch commits and push once per review round; no WIP pushes. Run ShellCheck and
+  `python3 -I test/vps-deploy/structure.py .github/workflows/vps-deploy.yml .` locally first.
+- Throwaway probe workflows on branches cost minutes too: delete the branch when the probe is done.
 
 ## `deploy-static.yml` (reusable)
 
