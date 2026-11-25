@@ -1,0 +1,33 @@
+name: smoke → VPS
+
+# The smoke app's own CI, and the deploy path's end-to-end proof: every merge that touches the
+# smoke app or the deploy workflow builds smoke/, pushes it as the smoke user, bumps
+# lucahost/vps-app-smoke and waits until Flux runs it (the job summary has the timings). The
+# secrets are this repo's and belong to the smoke app alone (vps-gitops: app-onboard.sh smoke).
+on:
+  push:
+    branches: [main]
+    paths:
+      - smoke/**
+      - .github/workflows/smoke.yml
+      - .github/workflows/vps-deploy.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    uses: ./.github/workflows/vps-deploy.yml
+    with:
+      app: smoke
+      components: hello=smoke
+    secrets:
+      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+      TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+      VPS_REGISTRY: ${{ secrets.VPS_REGISTRY }}
+      VPS_REGISTRY_USER: ${{ secrets.VPS_REGISTRY_USER }}
+      VPS_REGISTRY_PASSWORD: ${{ secrets.VPS_REGISTRY_PASSWORD }}
+      VPS_RECEIVER_URL: ${{ secrets.VPS_RECEIVER_URL }}
+      VPS_RECEIVER_TOKEN: ${{ secrets.VPS_RECEIVER_TOKEN }}
+      VPS_APP_DEPLOY_KEY: ${{ secrets.VPS_APP_DEPLOY_KEY }}

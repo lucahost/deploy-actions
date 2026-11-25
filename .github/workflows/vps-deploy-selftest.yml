@@ -1,0 +1,35 @@
+name: vps-deploy self-test
+
+# Runs vps-deploy.yml's own step scripts against a local zot registry, bare deploy repo and fake
+# Flux (test/vps-deploy/selftest.sh): build, push, digest, bump, signed Receiver call, and the wait
+# that must pass only when Flux applied the commit. The smoke workflow is the real end-to-end run.
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/vps-deploy*.yml
+      - test/vps-deploy/**
+      - smoke/**
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Tools
+        run: sudo NEEDRESTART_MODE=l DEBIAN_FRONTEND=noninteractive apt-get install -y apache2-utils python3-yaml
+      - name: ShellCheck the workflow's step scripts and the test
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/steps"
+          for id in check build push bump notify wait; do
+            python3 -I test/vps-deploy/steps.py .github/workflows/vps-deploy.yml "$id" > "$RUNNER_TEMP/steps/$id.sh"
+          done
+          shellcheck -s bash "$RUNNER_TEMP"/steps/*.sh test/vps-deploy/selftest.sh scripts/*.sh
+      - name: Self-test
+        run: bash test/vps-deploy/selftest.sh
