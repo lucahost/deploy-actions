@@ -65,9 +65,11 @@ permissions:
 jobs:
   deploy:
     name: Deploy ${{ inputs.app }}
-    # main only: the Environment's deployment branch policy enforces it (a branch or a dispatch from
-    # one gets no secrets and no tailnet identity); this guard skips the job before it asks.
-    if: github.ref == 'refs/heads/main'
+    # main only, and only for a push to main or a dispatch on main: the Environment's deployment
+    # branch policy enforces the branch (a branch or a dispatch from one gets no secrets and no
+    # tailnet identity); this guard also keeps out callers that run with ref=main for other events
+    # (pull_request_target, workflow_run, schedule), before the job asks for anything.
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     environment: vps
     permissions:
       contents: read

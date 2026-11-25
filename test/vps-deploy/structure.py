@@ -1,6 +1,6 @@
 """Guard rails of the deploy workflows that a run can't show (vps-deploy-selftest.yml):
 
-- vps-deploy.yml's job uses Environment "vps", runs only for refs/heads/main, may mint an OIDC
+- vps-deploy.yml's job uses Environment "vps", runs only for a push or dispatch on main, may mint an OIDC
   token and takes no secrets as inputs (they come from the Environment); Tailscale uses workload
   identity (no OAuth secret);
 - every action it uses is pinned to a 40-character commit SHA;
@@ -23,8 +23,8 @@ if call.get("secrets"):
 job = wf["jobs"]["deploy"]
 if job.get("environment") != "vps":
     problems.append("job environment is not 'vps'")
-if job.get("if") != "github.ref == 'refs/heads/main'":
-    problems.append("job lacks the main-only guard")
+if job.get("if") != "github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')":
+    problems.append("job lacks the guard: main only, push or workflow_dispatch only")
 if (job.get("permissions") or {}).get("id-token") != "write":
     problems.append("job can't mint an OIDC token")
 for step in job["steps"]:
@@ -48,4 +48,4 @@ for p in problems:
     print("   FAIL: " + p)
 if problems:
     sys.exit(1)
-print("   ok: Environment vps, main only, OIDC, every action SHA-pinned, no secrets passed, no ${{ }} in scripts")
+print("   ok: Environment vps, push/dispatch on main only, OIDC, every action SHA-pinned, no secrets passed, no ${{ }} in scripts")

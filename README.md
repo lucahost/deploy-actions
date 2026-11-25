@@ -32,8 +32,8 @@ jobs:
 
 Get the SHA with `git ls-remote https://github.com/lucahost/deploy-actions refs/heads/main` after
 reviewing that commit. No `secrets:` are passed: the job reads them itself from the caller's
-**Environment `vps`**. It runs only for `refs/heads/main`, and the Environment's deployment branch
-policy (main only) enforces that. A branch, a PR or a dispatch from a branch gets no
+**Environment `vps`**. It runs only for a push to `main` or a `workflow_dispatch` on `main`, and
+the Environment's deployment branch policy (main only) enforces the branch. A branch, a PR or a dispatch from a branch gets no
 credentials and no tailnet identity.
 
 `components`: one per line, `<image>=<build context>[:<Dockerfile>]`; the image becomes
