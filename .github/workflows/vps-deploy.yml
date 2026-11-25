@@ -142,7 +142,7 @@ jobs:
           echo "t_built=$(date +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Join the tailnet (tag:ci-deploy reaches only :8446 and :8447 on the VPS)
-        uses: tailscale/github-action@v4
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0 (receives the OAuth secret: pinned)
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
