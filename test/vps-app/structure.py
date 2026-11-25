@@ -54,6 +54,20 @@ else:
     r = subprocess.run(["git", "-C", sys.argv[2], "diff", "--quiet", pin, "HEAD", "--", "vps/"], capture_output=True, text=True)
     if r.returncode != 0:
         problems.append(f"vps/ at the pinned {pin[:7]} differs from this checkout's (or the commit is unknown): repin vps-app.yml ({r.stderr.strip()[:120]})")
+# Every caller in this repo (smoke) passes the Environment's secrets with inherit only, may mint
+# an OIDC token, and names a vps.yaml that exists.
+import glob, os
+for f in glob.glob(os.path.join(sys.argv[2], ".github/workflows/*.yml")):
+    caller = yaml.safe_load(open(f))
+    for jname, j in (caller.get("jobs") or {}).items():
+        if str(j.get("uses", "")).endswith("workflows/vps-app.yml"):
+            if j.get("secrets") != "inherit":
+                problems.append(f"{os.path.basename(f)}: job {jname} must pass 'secrets: inherit' (and no secrets by name)")
+            if ((caller.get("permissions") or {}).get("id-token") != "write") and ((j.get("permissions") or {}).get("id-token") != "write"):
+                problems.append(f"{os.path.basename(f)}: no id-token: write for job {jname}")
+            vf = (j.get("with") or {}).get("file", "vps.yaml")
+            if not os.path.exists(os.path.join(sys.argv[2], vf)):
+                problems.append(f"{os.path.basename(f)}: {vf} doesn't exist")
 for p in problems:
     print("   FAIL: " + p)
 if problems:
