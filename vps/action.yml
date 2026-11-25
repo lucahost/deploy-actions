@@ -1,0 +1,43 @@
+name: vps render and pack
+description: >-
+  Renders an app's vps.yaml with this directory's chart and packs the artifact Flux applies
+  (lucahost/vps-gitops, docs/design.md "Onboarding v2"). A composite action so that the runner
+  fetches the chart and scripts at the very commit vps-app.yml pins (a reusable workflow can't
+  check out its own private repo).
+inputs:
+  file:
+    description: the app's vps.yaml
+    required: true
+  images:
+    description: JSON object, image name → registry.internal/<app>/<image>:<sha>@<digest>
+    required: true
+  revision:
+    description: the source commit
+    required: true
+  out:
+    description: directory to create with the artifact
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        FILE: ${{ inputs.file }}
+        IMAGES: ${{ inputs.images }}
+        REVISION: ${{ inputs.revision }}
+        OUT: ${{ inputs.out }}
+        TOOLS: ${{ github.action_path }}
+        HELM_VERSION: 3.19.2
+        HELM_SHA256: 2114c9dea2844dce6d0ee2d792a9aae846be8cf53d5b19dc2988b5a0e8fec26e   # linux-amd64.tar.gz
+      run: |
+        set -euo pipefail
+        work=$(mktemp -d)
+        if ! command -v helm >/dev/null || [ "$(helm version --template '{{.Version}}' 2>/dev/null)" != "v$HELM_VERSION" ]; then
+          curl -fsSL -o "$work/helm.tgz" "https://get.helm.sh/helm-v$HELM_VERSION-linux-amd64.tar.gz"
+          echo "$HELM_SHA256  $work/helm.tgz" | sha256sum -c - >/dev/null
+          tar -xzf "$work/helm.tgz" -C "$work" linux-amd64/helm
+          export HELM="$work/linux-amd64/helm"
+        fi
+        printf '%s' "$IMAGES" > "$work/images.json"
+        bash "$TOOLS/render.sh" "$FILE" "$work/images.json" "$REVISION" "$work/rendered.yaml"
+        bash "$TOOLS/pack.sh" "$(dirname "$FILE")" "$work/rendered.yaml" "$OUT"

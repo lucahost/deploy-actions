@@ -1,0 +1,31 @@
+# The self-test's app (and the shape biergit takes): web, api with a migration, a cron, Postgres
+# with its backup, a volume, secrets.
+app: demo
+components:
+  web:
+    build: {context: web}
+    port: 8080
+    uid: 101
+    memory: 128Mi
+  api:
+    build: {context: api, dockerfile: api/Dockerfile}
+    port: 5000
+    uid: 1654
+    memory: 1Gi
+    memoryRequest: 160Mi
+    health: /health
+    env: {ASPNETCORE_URLS: "http://+:5000"}
+    secretEnv: [demo-env]
+    writable: [/home/app]
+    volumes: {files: /data}
+    migrate:
+      build: {context: api, dockerfile: api/Migrations.Dockerfile}
+cron:
+  cleanup:
+    component: api
+    schedule: "15 3 * * *"
+    args: ["--cleanup"]
+postgres:
+  image: docker.io/library/postgres:19@sha256:4ae330eb888b3b769aa542424859059d8e37507e365d3d48024446dacd8c4d8d
+  memory: 1Gi
+  backup: {schedule: "45 2 * * *"}

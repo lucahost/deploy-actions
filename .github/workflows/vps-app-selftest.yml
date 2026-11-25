@@ -1,0 +1,49 @@
+name: vps-app self-test
+
+# Runs vps-app.yml's own step scripts and its render/pack action against a local zot registry and a
+# fake Flux (test/vps-app/selftest.sh), and checks its guard rails (test/vps-app/structure.py).
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/vps-app*.yml
+      - vps/**
+      - test/vps-app/**
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      KUBECONFORM_VERSION: 0.6.7
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0             # structure.py compares vps/ at the pinned commit
+      - name: Tools
+        run: |
+          set -euo pipefail
+          sudo NEEDRESTART_MODE=l DEBIAN_FRONTEND=noninteractive apt-get install -y apache2-utils python3-yaml skopeo
+          c="https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}"
+          cd "$RUNNER_TEMP" && curl -fsSLO "$c/kubeconform-linux-amd64.tar.gz" && curl -fsSL -o sums "$c/CHECKSUMS"
+          grep ' kubeconform-linux-amd64.tar.gz$' sums | sha256sum -c - && tar -xzf kubeconform-linux-amd64.tar.gz kubeconform
+          sudo install -m 0755 kubeconform /usr/local/bin/kubeconform
+          v=3.19.2; curl -fsSLO "https://get.helm.sh/helm-v$v-linux-amd64.tar.gz"
+          echo "2114c9dea2844dce6d0ee2d792a9aae846be8cf53d5b19dc2988b5a0e8fec26e  helm-v$v-linux-amd64.tar.gz" | sha256sum -c -
+          tar -xzf "helm-v$v-linux-amd64.tar.gz" linux-amd64/helm && sudo install -m 0755 linux-amd64/helm /usr/local/bin/helm
+      - name: ShellCheck the step scripts, the action's scripts and the test
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/steps"
+          for id in check build push publish notify wait; do
+            python3 -I test/vps-deploy/steps.py .github/workflows/vps-app.yml "$id" > "$RUNNER_TEMP/steps/$id.sh"
+          done
+          shellcheck -s bash "$RUNNER_TEMP"/steps/*.sh vps/*.sh test/vps-app/selftest.sh
+      - name: Guard rails
+        run: python3 -I test/vps-app/structure.py .github/workflows/vps-app.yml .
+      - name: Self-test
+        run: bash test/vps-app/selftest.sh

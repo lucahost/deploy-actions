@@ -1,0 +1,8 @@
+apiVersion: v2
+name: vps-app
+description: >-
+  Renders an app's vps.yaml into Kubernetes manifests for the VPS cluster (lucahost/vps-gitops,
+  docs/design.md "Onboarding v2"). Used only as a renderer (helm template, in vps-app.yml); Flux
+  applies the plain output. The secure defaults are not values: nothing in vps.yaml turns them off.
+type: application
+version: 1.0.0

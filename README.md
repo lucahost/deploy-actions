@@ -4,6 +4,47 @@ Shared GitHub Actions for deploying to the Hetzner VPS: apps into its k3s cluste
 (`vps-deploy.yml`, phase 2 of [lucahost/vps-gitops](https://github.com/lucahost/vps-gitops)) and
 static `*.hostettler.io` sites (`deploy-static.yml`).
 
+## `vps-app.yml` (reusable, Onboarding v2): an app into the VPS cluster
+
+The way apps deploy from Onboarding v2 on (lucahost/vps-gitops, `docs/design.md` "Onboarding v2").
+No deploy repo: the app repo holds `vps.yaml`, `deploy/secrets/<secret>/<KEY>` (one SOPS file per
+value) and optionally `deploy/extra/*.yaml`.
+
+What the job does:
+1. builds the components `vps.yaml` names;
+2. joins the tailnet with the one federated identity;
+3. pushes `registry.internal/<app>/<image>:<sha>` as the app's own user;
+4. renders `vps.yaml` with `vps/chart` (the commit the workflow pins, through the action `vps/`)
+   and packs the artifact;
+5. pushes it as `<app>/manifests:<sha>`;
+6. **only if `<app>/manifests:live` exists** (the cutover created it), moves `live`, calls the
+   app's Receiver and waits until Flux runs it. Before the cutover the run only publishes.
+
+```yaml
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  deploy:
+    uses: lucahost/deploy-actions/.github/workflows/vps-app.yml@<40-character commit sha>   # vps-app, YYYY-MM-DD
+    secrets: inherit           # the Environment's two secrets reach the called job only this way
+```
+
+- **The Environment `vps`** of the app repo (main only) holds two secrets: `VPS_REGISTRY_PASSWORD`
+  and `VPS_RECEIVER_TOKEN`. `vps-onboard` (vps-gitops) creates and sets both.
+- **Everything else is a default in `vps-app.yml`:**
+  - the tailnet host;
+  - the registry user (the app's name);
+  - the Receiver path (derived from its token);
+  - the Tailscale client ID and audience (not secrets).
+- **`vps.yaml`'s schema** is `vps/chart/values.schema.json`. Unknown fields are errors, and the
+  secure defaults (Pod Security restricted, `hostUsers: false`, a read-only root, drop ALL,
+  limits, probes) aren't fields at all. Example: `test/vps-app/demo/vps.yaml`.
+- **`vps-app-selftest.yml`** runs the step scripts, the render and the pack against a local
+  registry and a fake Flux.
+- **`tailscale-identity-check.yml`** (manual) proves the identity refuses everything but this
+  workflow on main in Environment `vps`.
+
 ## `vps-deploy.yml` (reusable): an app into the VPS cluster
 
 For an app that has a tenant in vps-gitops and its own deploy repo `lucahost/vps-app-<app>`. The

@@ -1,0 +1,56 @@
+{{- $root := . }}
+{{- range $name, $j := .Values.cron }}
+{{- $c := index $root.Values.components $j.component | default dict }}
+{{- if not $c }}{{ fail (printf "cron %s: no component %s" $name $j.component) }}{{ end }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $name }}
+  labels:
+    app: {{ $j.component }}
+spec:
+  suspend: false                       # owned by Flux: a manual suspend is reset on the next apply
+  schedule: {{ $j.schedule | quote }}
+  timeZone: {{ $j.timeZone | default "Europe/Zurich" }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app: {{ $j.component }}
+        spec:
+          restartPolicy: Never
+          {{- include "vps.pod" (dict "uid" $c.uid "gid" ($c.gid | default $c.uid)) | nindent 10 }}
+          containers:
+            - name: {{ $name }}
+              image: {{ include "vps.image" (dict "root" $root "spec" $c "key" $j.component) }}
+              {{- with $j.command }}
+              command: {{ toJson . }}
+              {{- end }}
+              {{- with $j.args }}
+              args: {{ toJson . }}
+              {{- end }}
+              {{- include "vps.env" $c | nindent 14 }}
+              {{- include "vps.container" . | nindent 14 }}
+              resources:
+                requests: {cpu: 10m, memory: 64Mi}
+                limits: {memory: {{ $j.memory | default $c.memory }}}
+              volumeMounts:
+                - {name: tmp, mountPath: /tmp}
+                {{- range $v, $p := $c.volumes }}
+                - {name: v-{{ $v }}, mountPath: {{ $p }}}
+                {{- end }}
+          volumes:
+            - name: tmp
+              emptyDir: {sizeLimit: 256Mi}
+            {{- range $v, $p := $c.volumes }}
+            - name: v-{{ $v }}
+              persistentVolumeClaim: {claimName: {{ $v }}}
+            {{- end }}
+{{- end }}

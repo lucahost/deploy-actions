@@ -1,0 +1,63 @@
+{{- with .Values.redis }}
+---
+{{ include "vps.pvc" (dict "app" $.Values.app "volume" "redis" "claim" "redis") }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  labels:
+    app: redis
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      {{- include "vps.pod" (dict "uid" (.uid | default 999) "gid" (.gid | default 1000)) | nindent 6 }}
+      containers:
+        - name: redis
+          image: {{ .image }}
+          {{- with .args }}
+          args: {{ toJson . }}
+          {{- end }}
+          {{- include "vps.env" . | nindent 10 }}
+          ports:
+            - name: redis
+              containerPort: 6379
+          {{- include "vps.container" . | nindent 10 }}
+          resources:
+            requests: {cpu: 20m, memory: {{ .memory }}}
+            limits: {memory: {{ .memory }}}
+          readinessProbe:
+            tcpSocket: {port: redis}
+            periodSeconds: 10
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: redis}
+        - name: tmp
+          emptyDir: {sizeLimit: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  labels:
+    app: redis
+spec:
+  selector:
+    app: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+{{- end }}
