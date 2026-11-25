@@ -1,0 +1,10 @@
+# The smoke app on Onboarding v2 (lucahost/vps-gitops tenants/smoke.yaml): one static component,
+# nginx-unprivileged serving smoke/index.html, exposed by the platform on 10.43.0.39:8080.
+app: smoke
+components:
+  hello:
+    build: {context: smoke}
+    port: 8080
+    uid: 101
+    memory: 64Mi
+    health: /

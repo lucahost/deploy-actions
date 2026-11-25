@@ -115,9 +115,11 @@ is no long-lived Tailscale secret. With these, the job can push only to `<app>/`
 `flux-tenant`, NetworkPolicies) bounds what the app can run. Rollback: `git revert` the deploy
 commit in `lucahost/vps-app-<app>`.
 
-**The smoke app** (`smoke/`, `.github/workflows/smoke.yml`) is the end-to-end proof: a merge that
-touches it or `vps-deploy.yml` deploys it to the VPS. `vps-deploy-selftest.yml` runs the
-workflow's own step scripts against a local registry, git repo and fake Flux on every PR.
+**The smoke app** (`smoke/`, `.github/workflows/smoke.yml`) is the end-to-end proof. It deploys
+with `vps-app.yml` (`smoke/vps.yaml`; vps-gitops `tenants/smoke.yaml`): a merge that touches it,
+`vps/` or `vps-app.yml` publishes it, and once smoke is switched over (`sudo vps cutover smoke`)
+deploys it to the VPS. `vps-deploy-selftest.yml` and `vps-app-selftest.yml` run the workflows' own
+step scripts against a local registry and a fake Flux on every PR.
 
 ## `deploy-static.yml` (reusable)
 
