@@ -19,9 +19,13 @@ permissions:
   id-token: write   # vps-deploy.yml joins the tailnet with this run's OIDC token
 
 jobs:
-  # Its credentials are in this repo's Environment "vps" (main only); none are passed here.
+  # Its credentials are in this repo's Environment "vps" (main only). `secrets: inherit` is what lets
+  # them reach the called job at all (GitHub passes a called workflow only what its caller passes,
+  # Environment secrets included); this repo has no repository or organisation secrets, so that's
+  # all it carries.
   deploy:
     uses: ./.github/workflows/vps-deploy.yml
     with:
       app: smoke
       components: hello=smoke
+    secrets: inherit

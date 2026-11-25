@@ -31,7 +31,7 @@ jobs:
             python3 -I test/vps-deploy/steps.py .github/workflows/vps-deploy.yml "$id" > "$RUNNER_TEMP/steps/$id.sh"
           done
           shellcheck -s bash "$RUNNER_TEMP"/steps/*.sh test/vps-deploy/selftest.sh scripts/*.sh
-      - name: Guard rails (Environment, main only, OIDC, SHA pins)
-        run: python3 -I test/vps-deploy/structure.py .github/workflows/vps-deploy.yml .github/workflows/smoke.yml
+      - name: Guard rails (Environment, main only, OIDC, SHA pins, secrets inherit)
+        run: python3 -I test/vps-deploy/structure.py .github/workflows/vps-deploy.yml .github/workflows/smoke.yml README.md
       - name: Self-test
         run: bash test/vps-deploy/selftest.sh

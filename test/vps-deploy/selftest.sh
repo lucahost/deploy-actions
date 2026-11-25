@@ -106,7 +106,9 @@ export APP=smoke SHA SOURCE_REPO=lucahost/deploy-actions RUN_ID=selftest KUSTOMI
 KUSTOMIZE_VERSION=$(python3 -I -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["jobs"]["deploy"]["env"]["KUSTOMIZE_VERSION"])' "$WF")
 KUSTOMIZE_SHA256=$(python3 -I -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["jobs"]["deploy"]["env"]["KUSTOMIZE_SHA256"])' "$WF")
 SHA=$(git -C "$ROOT" rev-parse HEAD)
-export DEPLOY_REPO_URL=file://$W/deploy.git COMPONENTS=hello=smoke BUILD_ARGS="" HAVE_SECRETS=true
+export DEPLOY_REPO_URL=file://$W/deploy.git COMPONENTS=hello=smoke BUILD_ARGS=""
+NAMES="TS_OIDC_CLIENT_ID TS_OIDC_AUDIENCE VPS_REGISTRY VPS_REGISTRY_USER VPS_REGISTRY_PASSWORD VPS_RECEIVER_URL VPS_RECEIVER_TOKEN VPS_APP_DEPLOY_KEY"
+for v in $NAMES; do export "SET_$v=true"; done     # what the check step gets when every one reached the job
 export VPS_REGISTRY=127.0.0.1:5000 VPS_REGISTRY_USER=smoke VPS_REGISTRY_PASSWORD=$SMOKE_PW REGISTRY_SCHEME=http
 export VPS_APP_DEPLOY_KEY="unused with a file:// deploy repo"
 export VPS_RECEIVER_URL=http://127.0.0.1:8447/hook/selftest WAIT_SECONDS=60
@@ -115,6 +117,17 @@ cd "$ROOT"
 
 info "deploy: check, build, push, bump, Receiver, wait"
 run_step check && ok "inputs and secrets checked"
+# What the first real run hit: Environment secrets that never reached the called job. The check
+# must fail and name exactly the empty ones (never a value).
+if out_c=$(SET_VPS_REGISTRY_PASSWORD=false SET_TS_OIDC_AUDIENCE=false run_step check 2>&1); then
+  fail "the check passed with two names empty"
+else
+  case "$out_c" in
+    *"empty in this job: TS_OIDC_AUDIENCE VPS_REGISTRY_PASSWORD."*"secrets: inherit"*) ok "the check names the empty ones (TS_OIDC_AUDIENCE VPS_REGISTRY_PASSWORD) and points at secrets: inherit";;
+    *) fail "the check failed without naming them: $out_c";;
+  esac
+  case "$out_c" in *"$SMOKE_PW"*) fail "the check printed a secret value";; esac
+fi
 t0=$(date +%s)
 run_step build && ok "built smoke/ for linux/amd64"
 run_step push && ok "pushed as smoke"

@@ -5,8 +5,9 @@
   identity (no OAuth secret);
 - every action it uses is pinned to a 40-character commit SHA;
 - no ${{ }} expression inside a run: script (steps read env only);
-- smoke.yml passes no secrets and grants id-token: write.
-usage: structure.py <vps-deploy.yml> <smoke.yml>
+- smoke.yml passes the secrets with inherit only and grants id-token: write; the README's caller
+  example does too; the check step reports each missing name (true/false, never a value).
+usage: structure.py <vps-deploy.yml> <smoke.yml> [README.md]
 """
 import re
 import sys
@@ -40,12 +41,27 @@ text = open(sys.argv[1]).read()
 if "TS_OAUTH_SECRET" in text:
     problems.append("TS_OAUTH_SECRET still referenced")
 sjob = smoke["jobs"]["deploy"]
-if "secrets" in sjob:
-    problems.append("smoke.yml passes secrets")
+# The caller must pass the secrets with inherit (Environment secrets don't reach a called workflow
+# otherwise: the first real run failed so), and nothing else: no secret mapped by name.
+if sjob.get("secrets") != "inherit":
+    problems.append("smoke.yml must call vps-deploy.yml with 'secrets: inherit' (and no secrets by name)")
+readme = open(sys.argv[3]).read() if len(sys.argv) > 3 else ""
+if readme:
+    example = readme[readme.find("uses: lucahost/deploy-actions/.github/workflows/vps-deploy.yml@"):][:600]
+    if "secrets: inherit" not in example:
+        problems.append("the README's caller example lacks 'secrets: inherit'")
+check = next(st for st in job["steps"] if st.get("id") == "check")
+names = {"TS_OIDC_CLIENT_ID", "TS_OIDC_AUDIENCE", "VPS_REGISTRY", "VPS_REGISTRY_USER", "VPS_REGISTRY_PASSWORD",
+         "VPS_RECEIVER_URL", "VPS_RECEIVER_TOKEN", "VPS_APP_DEPLOY_KEY"}
+if {k[4:] for k in check.get("env", {}) if k.startswith("SET_")} != names:
+    problems.append("the check step doesn't report each secret/variable by name")
+for k, v in check.get("env", {}).items():
+    if k.startswith("SET_") and not re.fullmatch(r"\$\{\{ (secrets|vars)\.[A-Z_]+ != '' \}\}", str(v)):
+        problems.append(f"{k} must be a true/false test, never a value")
 if (smoke.get("permissions") or {}).get("id-token") != "write":
     problems.append("smoke.yml doesn't grant id-token: write")
 for p in problems:
     print("   FAIL: " + p)
 if problems:
     sys.exit(1)
-print("   ok: Environment vps, push/dispatch on main only, OIDC, every action SHA-pinned, no secrets passed, no ${{ }} in scripts")
+print("   ok: Environment vps, push/dispatch on main only, OIDC, SHA pins, callers inherit secrets, check names each one, no ${{ }} in scripts")

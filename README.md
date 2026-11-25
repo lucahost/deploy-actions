@@ -28,11 +28,17 @@ jobs:
       components: |
         api=backend
         web=frontend
+    secrets: inherit           # how the Environment's secrets reach the called job (see below)
 ```
 
 Get the SHA with `git ls-remote https://github.com/lucahost/deploy-actions refs/heads/main` after
-reviewing that commit. No `secrets:` are passed: the job reads them itself from the caller's
-**Environment `vps`**. It runs only for a push to `main` or a `workflow_dispatch` on `main`, and
+reviewing that commit. The job reads its secrets and variables from the caller's **Environment
+`vps`**. The caller must still pass secrets with `secrets: inherit`: GitHub hands a called workflow
+only the secrets its caller passes, Environment secrets included, even when the called job names
+the Environment, and otherwise they are silently empty. Keep no repository or organisation
+secrets in the calling repo besides that Environment's, since `inherit` would carry them too; the
+job reads only its eight names. Don't map them by name (`secrets: {X: ${{ secrets.X }}}`): the
+calling job has no Environment, so those would be empty. It runs only for a push to `main` or a `workflow_dispatch` on `main`, and
 the Environment's deployment branch policy (main only) enforces the branch. A branch, a PR or a dispatch from a branch gets no
 credentials and no tailnet identity.
 
