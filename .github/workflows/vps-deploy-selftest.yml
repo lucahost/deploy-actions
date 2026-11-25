@@ -2,17 +2,24 @@ name: vps-deploy self-test
 
 # Runs vps-deploy.yml's own step scripts and its render/pack action against a local zot registry and a
 # fake Flux (test/vps-deploy/selftest.sh), and checks its guard rails (test/vps-deploy/structure.py).
+# On PRs that touch what it tests: the workflows (structure.py reads them all), vps/, the test and
+# smoke/ (its vps.yaml). Not again on main after the merge: the PR ran the same tree, and a merge
+# touching smoke/, vps/ or vps-deploy.yml runs the real thing (smoke.yml). README, "CI budget".
 on:
   pull_request:
-  push:
-    branches: [main]
     paths:
-      - .github/workflows/vps-deploy*.yml
+      - .github/workflows/**
       - vps/**
       - test/vps-deploy/**
+      - smoke/**
 
 permissions:
   contents: read
+
+# A newer push to the same PR cancels the run still going.
+concurrency:
+  group: vps-deploy-selftest-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   selftest:
