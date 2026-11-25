@@ -93,9 +93,16 @@ expect_names='["web","api","api-migrate"]'
 grep -q "registry.internal/demo/api:$SHA1@sha256:" <<<"$(out push images)" && ok "images pinned by the registry's digests" || fail "images: $(out push images)"
 [ "$(out publish live)" = false ] && ok "no live tag: published only" || fail "live=$(out publish live) before any cutover"
 grep -q "Published only" "$W/summary" && ok "the summary says so" || fail "no 'Published only' in the summary"
-flux pull artifact "oci://127.0.0.1:5000/demo/manifests:$SHA1" --output "$W/pulled" --creds "demo:$DEMO_PW" --insecure-registry >/dev/null 2>&1 \
-  && cmp -s "$W/pulled/kustomization.yaml" "$RUNNER_TEMP/artifact/kustomization.yaml" && ok "the artifact in the registry is what was packed" || fail "pulled artifact differs"
-kubectl kustomize "$W/pulled" > "$W/built.yaml" 2>/dev/null && ok "the artifact builds (kustomize)" || fail "kustomize build of the artifact"
+# flux pull wants an existing output directory; credentials through a docker config, not argv
+mkdir -p "$W/pulled" "$W/pull-docker"
+AUTH=$(printf 'demo:%s' "$DEMO_PW" | base64 -w0) jq -n '{auths: {"127.0.0.1:5000": {auth: $ENV.AUTH}}}' > "$W/pull-docker/config.json"
+if ! DOCKER_CONFIG=$W/pull-docker flux pull artifact "oci://127.0.0.1:5000/demo/manifests:$SHA1" --output "$W/pulled" --insecure-registry > "$W/pull.log" 2>&1; then
+  fail "flux pull artifact: $(tail -3 "$W/pull.log")"
+elif diff -r "$W/pulled" "$RUNNER_TEMP/artifact" >/dev/null; then ok "the artifact in the registry is what was packed"
+else fail "pulled artifact differs: $(diff -rq "$W/pulled" "$RUNNER_TEMP/artifact" | head -3)"; fi
+if kubectl kustomize "$W/pulled" > "$W/built.yaml" 2> "$W/kustomize.log"; then ok "the artifact builds (kustomize)"
+else fail "kustomize build of the artifact: $(tail -3 "$W/kustomize.log")"; fi
+[ -s "$W/built.yaml" ] || die "nothing built; the checks below would pass on nothing"
 if command -v kubeconform >/dev/null; then
   kubeconform -strict -summary -kubernetes-version master "$W/built.yaml" >/dev/null && ok "kubeconform: valid" || fail "kubeconform: $(kubeconform -strict -kubernetes-version master "$W/built.yaml" 2>&1 | tail -3)"
 fi
@@ -108,7 +115,9 @@ done
 grep -q 'name: demo-env-' "$W/built.yaml" && grep -q 'JWT_SECRET:' "$W/built.yaml" && ok "secretGenerator: Secret demo-env-<hash>, its key, the references rewritten" || fail "no generated Secret"
 
 info "the cutover makes live; the next deploy moves it and waits"
-flux tag artifact "oci://127.0.0.1:5000/demo/manifests:$SHA1" --tag live --creds "vps-cutover:$CUT_PW" --insecure-registry >/dev/null 2>&1 \
+mkdir -p "$W/cut-docker"
+AUTH=$(printf 'vps-cutover:%s' "$CUT_PW" | base64 -w0) jq -n '{auths: {"127.0.0.1:5000": {auth: $ENV.AUTH}}}' > "$W/cut-docker/config.json"
+DOCKER_CONFIG=$W/cut-docker flux tag artifact "oci://127.0.0.1:5000/demo/manifests:$SHA1" --tag live --insecure-registry >/dev/null 2>&1 \
   && ok "vps-cutover tagged live (what 'vps cutover' does)" || fail "vps-cutover couldn't tag live"
 SHA2=$(printf '%040d' 2)
 deploy "$SHA2" > "$W/deploy2.log" 2>&1 || { cat "$W/deploy2.log"; die "the second deploy failed"; }
