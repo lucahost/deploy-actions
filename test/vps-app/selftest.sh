@@ -71,16 +71,18 @@ export FILE=vps.yaml SOURCE_REPO=lucahost/demo RUN_ID=1 VPS_HOST=vps.invalid REG
   SET_VPS_REGISTRY_PASSWORD=true SET_VPS_RECEIVER_TOKEN=true VPS_REGISTRY_PASSWORD=$DEMO_PW VPS_RECEIVER_TOKEN=$TOKEN WAIT_SECONDS=20
 export RUNNER_TEMP=$W/runner; mkdir -p "$RUNNER_TEMP"
 
-deploy() {  # $1 = commit sha: check, build, push, render+pack (the action's scripts), publish
-  export SHA=$1; rm -rf "$RUNNER_TEMP/artifact"
-  run_step check >/dev/null && APP=$(out check app) && export APP
-  run_step build >/dev/null && NAMES=$(out build names) && export NAMES
-  run_step push >/dev/null && IMAGES=$(out push images) && export IMAGES
+deploy() {  # $1 = commit sha: check, build, push, render+pack (the action's scripts), publish, summary
+  # Called with || (which turns off set -e inside), so every step returns on its own failure.
+  export SHA=$1; rm -rf "$RUNNER_TEMP/artifact"; : > "$W/summary"
+  run_step check || { echo "!! check failed"; return 1; }; APP=$(out check app); export APP
+  run_step build || { echo "!! build failed"; return 1; }; NAMES=$(out build names); export NAMES
+  run_step push || { echo "!! push failed"; return 1; }; IMAGES=$(out push images); export IMAGES
   printf '%s' "$IMAGES" > "$W/images.json"
-  (cd "$APP_DIR" && bash "$ROOT/vps/render.sh" vps.yaml "$W/images.json" "$SHA" "$W/rendered.yaml" >/dev/null \
-     && bash "$ROOT/vps/pack.sh" . "$W/rendered.yaml" "$RUNNER_TEMP/artifact" >/dev/null)
-  run_step publish
+  (cd "$APP_DIR" && bash "$ROOT/vps/render.sh" vps.yaml "$W/images.json" "$SHA" "$W/rendered.yaml" \
+     && bash "$ROOT/vps/pack.sh" . "$W/rendered.yaml" "$RUNNER_TEMP/artifact") || { echo "!! render/pack failed"; return 1; }
+  run_step publish || { echo "!! publish failed"; return 1; }
   DIGEST=$(out publish digest); export DIGEST
+  LIVE=$(out publish live) ARTIFACT=$(out publish artifact) run_step summary || { echo "!! summary failed"; return 1; }
 }
 
 info "a deploy before the cutover: publish only"
@@ -118,7 +120,8 @@ run_step wait >/dev/null && ok "wait: applied (live@$DIGEST) and Ready" || fail 
 echo fail > "$W/mode"; run_step notify >/dev/null
 if out_w=$(run_step wait 2>&1); then fail "wait passed although Flux reported a failure"; else
   grep -q "Flux couldn't apply" <<<"$out_w" && ok "wait fails when Flux reports a failure" || fail "wait failed for another reason: $out_w"; fi
-echo never > "$W/mode"; SHA3=$(printf '%040d' 3); deploy "$SHA3" >/dev/null 2>&1; run_step notify >/dev/null
+echo never > "$W/mode"; SHA3=$(printf '%040d' 3); deploy "$SHA3" > "$W/deploy3.log" 2>&1 || { cat "$W/deploy3.log"; die "the third deploy failed"; }
+run_step notify >/dev/null
 if out_w=$(WAIT_SECONDS=6 run_step wait 2>&1); then fail "wait passed although nothing converged"; else
   grep -q "not applied and healthy after 6s" <<<"$out_w" && ok "wait fails when nothing converges in time" || fail "wait failed for another reason: $out_w"; fi
 if VPS_RECEIVER_TOKEN=wrong run_step notify >/dev/null 2>&1; then fail "a wrong token was accepted"; else ok "the Receiver refuses a wrong token"; fi

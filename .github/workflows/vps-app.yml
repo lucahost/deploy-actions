@@ -101,7 +101,8 @@ jobs:
           # FILE: the job's env. One image per component with build:, and one per migrate with build:. Names: <component>,
           # <component>-migrate. Components with image: run a pinned third-party image (allowlisted).
           # shellcheck disable=SC2153  # FILE comes from the job's env
-          builds=$(yq -o=json '[.components | to_entries[] | (select(.value.build) | {"name": .key, "b": .value.build}), (select(.value.migrate.build) | {"name": (.key + "-migrate"), "b": .value.migrate.build})]' "$FILE")
+          # yq only converts; jq selects (yq's `,` inside a pipe dropped the migrate builds).
+          builds=$(yq -o=json '.' "$FILE" | jq -c '[.components | to_entries[] | (select(.value.build) | {name: .key, b: .value.build}), (select(.value.migrate.build) | {name: (.key + "-migrate"), b: .value.migrate.build})]')
           n=$(jq length <<<"$builds")
           for i in $(seq 0 $((n - 1))); do
             name=$(jq -r ".[$i].name" <<<"$builds"); ctx=$(jq -r ".[$i].b.context" <<<"$builds")
@@ -259,6 +260,7 @@ jobs:
           echo "t_live=$(date +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Summary
+        id: summary
         if: always()
         env:
           APP: ${{ steps.check.outputs.app }}
