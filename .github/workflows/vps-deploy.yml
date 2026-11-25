@@ -48,9 +48,12 @@ on:
         required: false
         type: string
         default: tag:ci-deploy
-    # No secrets are passed in: the job reads them from the caller's Environment "vps" (secrets
-    # VPS_REGISTRY, VPS_REGISTRY_USER, VPS_REGISTRY_PASSWORD, VPS_RECEIVER_URL, VPS_RECEIVER_TOKEN,
-    # VPS_APP_DEPLOY_KEY; variables TS_OIDC_CLIENT_ID, TS_OIDC_AUDIENCE).
+    # The job reads the caller's Environment "vps" (secrets VPS_REGISTRY, VPS_REGISTRY_USER,
+    # VPS_REGISTRY_PASSWORD, VPS_RECEIVER_URL, VPS_RECEIVER_TOKEN, VPS_APP_DEPLOY_KEY; variables
+    # TS_OIDC_CLIENT_ID, TS_OIDC_AUDIENCE). The caller passes them with `secrets: inherit`: GitHub
+    # hands a called workflow only the secrets its caller passes, Environment secrets included,
+    # even when the called job names the Environment (without it they are silently empty). The
+    # calling repos keep no repository or organisation secrets, so inherit carries only these.
     outputs:
       bump-sha:
         description: The deploy-repo commit Flux applied
@@ -96,13 +99,28 @@ jobs:
         id: check
         env:
           COMPONENTS: ${{ inputs.components }}
-          HAVE_SECRETS: >-
-            ${{ vars.TS_OIDC_CLIENT_ID != '' && vars.TS_OIDC_AUDIENCE != '' && secrets.VPS_REGISTRY != ''
-              && secrets.VPS_REGISTRY_USER != '' && secrets.VPS_REGISTRY_PASSWORD != '' && secrets.VPS_RECEIVER_URL != ''
-              && secrets.VPS_RECEIVER_TOKEN != '' && secrets.VPS_APP_DEPLOY_KEY != '' }}
+          # Whether each one reached this job (true/false, never a value). An Environment secret
+          # reaches a called workflow only if the caller passes secrets (secrets: inherit), even
+          # though this job names the Environment; without it every one is silently empty.
+          SET_TS_OIDC_CLIENT_ID: ${{ vars.TS_OIDC_CLIENT_ID != '' }}
+          SET_TS_OIDC_AUDIENCE: ${{ vars.TS_OIDC_AUDIENCE != '' }}
+          SET_VPS_REGISTRY: ${{ secrets.VPS_REGISTRY != '' }}
+          SET_VPS_REGISTRY_USER: ${{ secrets.VPS_REGISTRY_USER != '' }}
+          SET_VPS_REGISTRY_PASSWORD: ${{ secrets.VPS_REGISTRY_PASSWORD != '' }}
+          SET_VPS_RECEIVER_URL: ${{ secrets.VPS_RECEIVER_URL != '' }}
+          SET_VPS_RECEIVER_TOKEN: ${{ secrets.VPS_RECEIVER_TOKEN != '' }}
+          SET_VPS_APP_DEPLOY_KEY: ${{ secrets.VPS_APP_DEPLOY_KEY != '' }}
         run: |
           [[ "$APP" =~ ^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$ ]] || { echo "::error::bad app name '$APP'"; exit 1; }
-          [ "$HAVE_SECRETS" = true ] || { echo "::error::$APP's secrets or variables are missing in the Environment vps (vps-gitops README, phase 2, steps 2 and 6)"; exit 1; }
+          missing=""
+          for v in TS_OIDC_CLIENT_ID TS_OIDC_AUDIENCE VPS_REGISTRY VPS_REGISTRY_USER VPS_REGISTRY_PASSWORD \
+                   VPS_RECEIVER_URL VPS_RECEIVER_TOKEN VPS_APP_DEPLOY_KEY; do
+            set_var="SET_$v"; [ "${!set_var:-}" = true ] || missing+=" $v"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::empty in this job:$missing. They belong in the Environment vps of the calling repo (vps-gitops README, phase 2, steps 2 and 6), and the caller must pass them with 'secrets: inherit' (deploy-actions README)."
+            exit 1
+          fi
           n=0
           while IFS= read -r line; do
             line=${line//[[:space:]]/}; [ -n "$line" ] || continue
