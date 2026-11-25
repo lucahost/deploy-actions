@@ -66,8 +66,8 @@ jobs:
       REGISTRY_PORT: "8446"
       HOOK_PORT: "8447"
       # The one federated identity of docs/design.md (owner's one-time step 1); not secrets.
-      TS_OIDC_CLIENT_ID: ""
-      TS_OIDC_AUDIENCE: ""
+      TS_OIDC_CLIENT_ID: TMABUofcLG11CNTRL-ktb1epw53B11CNTRL
+      TS_OIDC_AUDIENCE: api.tailscale.com/TMABUofcLG11CNTRL-ktb1epw53B11CNTRL
       FLUX_VERSION: 2.9.6
       FLUX_SHA256: b4d22673e9246cbd628881f1a9ef3b090085dced291e42d804555cee8e8d42c5   # linux_amd64.tar.gz
     steps:
