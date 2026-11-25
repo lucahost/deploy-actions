@@ -194,18 +194,27 @@ jobs:
                   --source "https://github.com/$SOURCE_REPO" --revision "main@sha1:$SHA" "${insecure[@]}" 2>&1) \
             || { echo "$out"; echo "::error::flux push artifact failed"; exit 1; }
           digest=$(grep -oE 'sha256:[a-f0-9]{64}' <<<"$out" | tail -1)
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "$out"; echo "::error::no digest from flux push artifact"; exit 1; }
           echo "pushed $APP/manifests:$SHA ($digest)"
           # Switched over? The cutover created live; until then this run only publishes.
           code=$(printf 'user = "%s:%s"\n' "$APP" "$VPS_REGISTRY_PASSWORD" | curl -s -o /dev/null -w '%{http_code}' --max-time 20 -K - -I \
             -H 'Accept: application/vnd.oci.image.manifest.v1+json' "${REGISTRY_SCHEME:-https}://$reg/v2/$APP/manifests/manifests/live")
           case "$code" in
-            200) live=true;  flux tag artifact "oci://$reg/$APP/manifests:$SHA" --tag live "${insecure[@]}" >/dev/null \
-                   || { echo "::error::couldn't move live"; exit 1; }; echo "live → $SHA";;
+            200) live=true
+                 # Moving a tag is the distribution API itself: this artifact's manifest, byte for byte,
+                 # PUT under "live" (flux tag artifact has no flag for the self-test's plain-HTTP registry).
+                 mt=application/vnd.oci.image.manifest.v1+json
+                 if ! printf 'user = "%s:%s"\n' "$APP" "$VPS_REGISTRY_PASSWORD" | curl -fsS --max-time 30 -K - -H "Accept: $mt" \
+                        -o "$work/manifest.json" "${REGISTRY_SCHEME:-https}://$reg/v2/$APP/manifests/manifests/$digest" \
+                    || ! printf 'user = "%s:%s"\n' "$APP" "$VPS_REGISTRY_PASSWORD" | curl -fsS --max-time 30 -K - -X PUT -H "Content-Type: $mt" \
+                        --data-binary @"$work/manifest.json" -o /dev/null "${REGISTRY_SCHEME:-https}://$reg/v2/$APP/manifests/manifests/live"; then
+                   echo "::error::couldn't move live"; exit 1
+                 fi
+                 echo "live → $SHA ($digest)";;
             404) live=false; echo "no live tag: $APP isn't switched over yet, so this run only publishes";;
             *)   echo "::error::registry answered $code for $APP/manifests:live"; exit 1;;
           esac
           rm -rf "$work"
-          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "$out"; echo "::error::no digest from flux push artifact"; exit 1; }
           { echo "artifact=$APP/manifests:$SHA@$digest"; echo "digest=$digest"; echo "live=$live"; echo "t_published=$(date +%s)"; } >> "$GITHUB_OUTPUT"
 
       - name: Call the app's Flux Receiver

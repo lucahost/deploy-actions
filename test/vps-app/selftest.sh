@@ -115,15 +115,17 @@ done
 grep -q 'name: demo-env-' "$W/built.yaml" && grep -q 'JWT_SECRET:' "$W/built.yaml" && ok "secretGenerator: Secret demo-env-<hash>, its key, the references rewritten" || fail "no generated Secret"
 
 info "the cutover makes live; the next deploy moves it and waits"
-mkdir -p "$W/cut-docker"
-AUTH=$(printf 'vps-cutover:%s' "$CUT_PW" | base64 -w0) jq -n '{auths: {"127.0.0.1:5000": {auth: $ENV.AUTH}}}' > "$W/cut-docker/config.json"
-if DOCKER_CONFIG=$W/cut-docker flux tag artifact "oci://127.0.0.1:5000/demo/manifests:$SHA1" --tag live --insecure-registry > "$W/tag.log" 2>&1; then
+# What `vps cutover` does as vps-cutover: the artifact's manifest PUT under "live".
+mt=application/vnd.oci.image.manifest.v1+json; d1=$(out publish digest)
+if printf 'user = "vps-cutover:%s"\n' "$CUT_PW" | curl -fsS -K - -H "Accept: $mt" -o "$W/m1.json" "http://127.0.0.1:5000/v2/demo/manifests/manifests/$d1" \
+   && printf 'user = "vps-cutover:%s"\n' "$CUT_PW" | curl -fsS -K - -X PUT -H "Content-Type: $mt" --data-binary @"$W/m1.json" -o /dev/null \
+        "http://127.0.0.1:5000/v2/demo/manifests/manifests/live"; then
   ok "vps-cutover tagged live (what 'vps cutover' does)"
-else fail "vps-cutover couldn't tag live: $(tail -3 "$W/tag.log"; docker logs zot-v2 2>&1 | tail -5)"; fi
+else fail "vps-cutover couldn't tag live: $(docker logs zot-v2 2>&1 | tail -5)"; fi
 SHA2=$(printf '%040d' 2)
 deploy "$SHA2" > "$W/deploy2.log" 2>&1 || { cat "$W/deploy2.log"; die "the second deploy failed"; }
 [ "$(out publish live)" = true ] && ok "live exists: this run deploys" || fail "live=$(out publish live) after the cutover"
-live=$(curl -s -I -u "demo:$DEMO_PW" -H 'Accept: application/vnd.oci.image.manifest.v1+json' http://127.0.0.1:5000/v2/demo/manifests/manifests/live | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:" {print $2}')
+live=$(printf 'user = "demo:%s"\n' "$DEMO_PW" | curl -s -I -K - -H 'Accept: application/vnd.oci.image.manifest.v1+json' http://127.0.0.1:5000/v2/demo/manifests/manifests/live | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:" {print $2}')
 [ "$live" = "$DIGEST" ] && ok "live moved to this run's artifact ($live)" || fail "live is $live, the run pushed $DIGEST"
 run_step notify >/dev/null && ok "Receiver accepted the signed call" || fail "Receiver refused"
 run_step wait >/dev/null && ok "wait: applied (live@$DIGEST) and Ready" || fail "wait failed on a good deploy"
