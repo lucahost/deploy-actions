@@ -169,14 +169,20 @@ jobs:
           VPS_REGISTRY_PASSWORD: ${{ secrets.VPS_REGISTRY_PASSWORD }}
           REGISTRY_SCHEME: https
         run: |
-          printf '%s' "$VPS_REGISTRY_PASSWORD" | docker login "$VPS_REGISTRY" -u "$VPS_REGISTRY_USER" --password-stdin >/dev/null
-          accept='application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json'
+          # The box registry (zot) takes OCI manifests only: skopeo converts the image the build
+          # loaded into Docker. The credentials go through a 0600 auth file, not the command line.
+          command -v skopeo >/dev/null || sudo NEEDRESTART_MODE=l DEBIAN_FRONTEND=noninteractive apt-get install -y skopeo >/dev/null
+          work=$(mktemp -d)
+          ( umask 077; jq -n --arg r "$VPS_REGISTRY" --arg a "$(printf '%s:%s' "$VPS_REGISTRY_USER" "$VPS_REGISTRY_PASSWORD" | base64 -w0)" \
+              '{auths: {($r): {auth: $a}}}' > "$work/auth.json" )
+          tls=(); [ "$REGISTRY_SCHEME" = https ] || tls=(--dest-tls-verify=false)
+          accept='application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json'
           images=""
           while IFS= read -r line; do
             line=${line//[[:space:]]/}; [ -n "$line" ] || continue
             name=${line%%=*}; ref="$VPS_REGISTRY/$APP/$name:$SHA"
-            docker tag "vps-deploy/$APP/$name:$SHA" "$ref"
-            docker push --quiet "$ref" >/dev/null
+            skopeo copy --quiet --format oci --authfile "$work/auth.json" "${tls[@]}" \
+              "docker-daemon:vps-deploy/$APP/$name:$SHA" "docker://$ref"
             # The digest the registry serves for that tag is what Flux and containerd will pull.
             digest=$(printf 'user = "%s:%s"\n' "$VPS_REGISTRY_USER" "$VPS_REGISTRY_PASSWORD" \
               | curl -fsS --max-time 30 -K - -I -H "Accept: $accept" "$REGISTRY_SCHEME://$VPS_REGISTRY/v2/$APP/$name/manifests/$SHA" \
@@ -185,7 +191,7 @@ jobs:
             echo "pushed $ref → $digest"
             images+="registry.internal/$APP/$name:$SHA@$digest"$'\n'
           done <<<"$COMPONENTS"
-          docker logout "$VPS_REGISTRY" >/dev/null
+          rm -rf "$work"
           { echo "images<<EOF"; printf '%s' "$images"; echo "EOF"; echo "t_pushed=$(date +%s)"; } >> "$GITHUB_OUTPUT"
 
       - name: Bump lucahost/vps-app-${{ inputs.app }}
