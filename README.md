@@ -16,38 +16,43 @@ returns Flux's Kustomization). It fails if Flux reports a failure or nothing con
 `wait-seconds` (default 300). The job summary lists the time of each step and commit → live.
 
 ```yaml
+permissions:
+  contents: read
+  id-token: write            # Tailscale workload identity
 jobs:
   deploy:
-    uses: lucahost/deploy-actions/.github/workflows/vps-deploy.yml@main
+    # A reviewed commit of this repo, not a branch (Renovate proposes updates).
+    uses: lucahost/deploy-actions/.github/workflows/vps-deploy.yml@<40-character commit sha>   # vps-deploy, YYYY-MM-DD
     with:
       app: biergit
       components: |
         api=backend
         web=frontend
-    secrets:
-      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-      TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
-      VPS_REGISTRY: ${{ secrets.VPS_REGISTRY }}
-      VPS_REGISTRY_USER: ${{ secrets.VPS_REGISTRY_USER }}
-      VPS_REGISTRY_PASSWORD: ${{ secrets.VPS_REGISTRY_PASSWORD }}
-      VPS_RECEIVER_URL: ${{ secrets.VPS_RECEIVER_URL }}
-      VPS_RECEIVER_TOKEN: ${{ secrets.VPS_RECEIVER_TOKEN }}
-      VPS_APP_DEPLOY_KEY: ${{ secrets.VPS_APP_DEPLOY_KEY }}
 ```
+
+Get the SHA with `git ls-remote https://github.com/lucahost/deploy-actions refs/heads/main` after
+reviewing that commit. No `secrets:` are passed: the job reads them itself from the caller's
+**Environment `vps`**. It runs only for `refs/heads/main`, and the Environment's deployment branch
+policy (main only) enforces that. A branch, a PR or a dispatch from a branch gets no
+credentials and no tailnet identity.
 
 `components`: one per line, `<image>=<build context>[:<Dockerfile>]`; the image becomes
 `registry.internal/<app>/<image>` in the deploy repo. `GIT_SHA` is passed as a build argument.
 
-**Secrets, per app, only in that app's source repo** (no organisation or shared secrets):
+**In the app's source repo, Settings → Environments → New environment `vps`.** Set "Deployment
+branches and tags" to *Selected branches*, rule `main`. Then add:
 
-| Secret | From |
-|---|---|
-| `VPS_REGISTRY`, `VPS_REGISTRY_USER`, `VPS_REGISTRY_PASSWORD`, `VPS_RECEIVER_URL`, `VPS_RECEIVER_TOKEN`, `VPS_APP_DEPLOY_KEY` | printed once by `sudo bash bootstrap/app-onboard.sh <app>` on the VPS (vps-gitops README, phase 2) |
-| `TS_OAUTH_CLIENT_ID`, `TS_OAUTH_SECRET` | a Tailscale OAuth client that may only issue `tag:ci-deploy` (vps-gitops README, phase 2) |
+| Kind | Name | From |
+|---|---|---|
+| secret | `VPS_REGISTRY`, `VPS_REGISTRY_USER`, `VPS_REGISTRY_PASSWORD`, `VPS_RECEIVER_URL`, `VPS_RECEIVER_TOKEN`, `VPS_APP_DEPLOY_KEY` | printed by `app-onboard.sh <app>` on the VPS (vps-gitops README, phase 2) |
+| variable | `TS_OIDC_CLIENT_ID`, `TS_OIDC_AUDIENCE` | the app's Tailscale federated identity for subject `repo:lucahost/<repo>:environment:vps`, tag `tag:ci-deploy` (vps-gitops README, phase 2) |
 
-With them the job can push only to `<app>/`, write only `lucahost/vps-app-<app>`, and trigger only
-that app's Receiver; the platform (`tenant-images`, `flux-tenant`, NetworkPolicies) bounds what
-the app can run. Rollback: `git revert` the deploy commit in `lucahost/vps-app-<app>`.
+No repository or organisation secrets. Tailscale is joined with workload identity: GitHub's OIDC
+token for that repo's Environment `vps`, which Tailscale lets join only as `tag:ci-deploy`. There
+is no long-lived Tailscale secret. With these, the job can push only to `<app>/`, write only
+`lucahost/vps-app-<app>`, and trigger only that app's Receiver. The platform (`tenant-images`,
+`flux-tenant`, NetworkPolicies) bounds what the app can run. Rollback: `git revert` the deploy
+commit in `lucahost/vps-app-<app>`.
 
 **The smoke app** (`smoke/`, `.github/workflows/smoke.yml`) is the end-to-end proof: a merge that
 touches it or `vps-deploy.yml` deploys it to the VPS. `vps-deploy-selftest.yml` runs the

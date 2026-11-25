@@ -102,7 +102,9 @@ FLUX_PID=$!
 for _ in $(seq 1 30); do curl -s -o /dev/null http://127.0.0.1:8447/status/smoke && break; sleep 0.2; done
 ok "fake Flux: Receiver /hook/selftest, GET /status/<app>"
 
-export APP=smoke SHA SOURCE_REPO=lucahost/deploy-actions RUN_ID=selftest KUSTOMIZE_VERSION=5.4.3
+export APP=smoke SHA SOURCE_REPO=lucahost/deploy-actions RUN_ID=selftest KUSTOMIZE_VERSION KUSTOMIZE_SHA256
+KUSTOMIZE_VERSION=$(python3 -I -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["jobs"]["deploy"]["env"]["KUSTOMIZE_VERSION"])' "$WF")
+KUSTOMIZE_SHA256=$(python3 -I -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["jobs"]["deploy"]["env"]["KUSTOMIZE_SHA256"])' "$WF")
 SHA=$(git -C "$ROOT" rev-parse HEAD)
 export DEPLOY_REPO_URL=file://$W/deploy.git COMPONENTS=hello=smoke BUILD_ARGS="" HAVE_SECRETS=true
 export VPS_REGISTRY=127.0.0.1:5000 VPS_REGISTRY_USER=smoke VPS_REGISTRY_PASSWORD=$SMOKE_PW REGISTRY_SCHEME=http

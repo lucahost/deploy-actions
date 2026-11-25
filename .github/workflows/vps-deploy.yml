@@ -1,9 +1,12 @@
 name: Deploy an app to the VPS cluster
 
 # Reusable workflow, phase 2 of lucahost/vps-gitops (docs/design.md, "Bump flow"). The caller is the
-# app's source repo, and every credential comes from ITS secrets: one set per app, printed once by
-# `sudo bash bootstrap/app-onboard.sh <app>` on the VPS. With them the job can push only to
-# <app>/ in the box registry, write only lucahost/vps-app-<app>, and call only that app's Receiver.
+# app's source repo. Every credential is in that repo's GitHub Environment "vps", which only main
+# may use (deployment branch policy), and the job runs only for refs/heads/main: one set per app,
+# printed by `app-onboard.sh <app>` on the VPS. With them the job can push only to <app>/ in the
+# box registry, write only lucahost/vps-app-<app>, and call only that app's Receiver. Tailscale is
+# joined with workload identity (GitHub's OIDC token for that Environment), no long-lived secret.
+# Callers pin this file by commit SHA (README.md).
 #
 #   1. build each component on this GitHub runner (linux/amd64, one manifest per image)
 #   2. join the tailnet as tag:ci-deploy, which reaches only the VPS's :8446 (registry) and :8447
@@ -45,26 +48,9 @@ on:
         required: false
         type: string
         default: tag:ci-deploy
-    secrets:
-      TS_OAUTH_CLIENT_ID:
-        required: true
-      TS_OAUTH_SECRET:
-        required: true
-      VPS_REGISTRY:
-        description: <vps tailnet name>:8446
-        required: true
-      VPS_REGISTRY_USER:
-        required: true
-      VPS_REGISTRY_PASSWORD:
-        required: true
-      VPS_RECEIVER_URL:
-        description: https://<vps tailnet name>:8447/hook/<path>
-        required: true
-      VPS_RECEIVER_TOKEN:
-        required: true
-      VPS_APP_DEPLOY_KEY:
-        description: SSH private key with write access to lucahost/vps-app-<app> only
-        required: true
+    # No secrets are passed in: the job reads them from the caller's Environment "vps" (secrets
+    # VPS_REGISTRY, VPS_REGISTRY_USER, VPS_REGISTRY_PASSWORD, VPS_RECEIVER_URL, VPS_RECEIVER_TOKEN,
+    # VPS_APP_DEPLOY_KEY; variables TS_OIDC_CLIENT_ID, TS_OIDC_AUDIENCE).
     outputs:
       bump-sha:
         description: The deploy-repo commit Flux applied
@@ -79,6 +65,13 @@ permissions:
 jobs:
   deploy:
     name: Deploy ${{ inputs.app }}
+    # main only: the Environment's deployment branch policy enforces it (a branch or a dispatch from
+    # one gets no secrets and no tailnet identity); this guard skips the job before it asks.
+    if: github.ref == 'refs/heads/main'
+    environment: vps
+    permissions:
+      contents: read
+      id-token: write          # the OIDC token Tailscale's workload identity checks
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     # One deploy per app at a time, in order (a newer run waits; it doesn't cancel the running one).
@@ -95,18 +88,19 @@ jobs:
       RUN_ID: ${{ github.run_id }}
       DEPLOY_REPO_URL: ssh://git@github.com/lucahost/vps-app-${{ inputs.app }}.git
       KUSTOMIZE_VERSION: 5.4.3
+      KUSTOMIZE_SHA256: 3669470b454d865c8184d6bce78df05e977c9aea31c30df3c669317d43bcc7a7   # linux_amd64.tar.gz
     steps:
       - name: Check inputs and secrets
         id: check
         env:
           COMPONENTS: ${{ inputs.components }}
           HAVE_SECRETS: >-
-            ${{ secrets.TS_OAUTH_CLIENT_ID != '' && secrets.TS_OAUTH_SECRET != '' && secrets.VPS_REGISTRY != ''
+            ${{ vars.TS_OIDC_CLIENT_ID != '' && vars.TS_OIDC_AUDIENCE != '' && secrets.VPS_REGISTRY != ''
               && secrets.VPS_REGISTRY_USER != '' && secrets.VPS_REGISTRY_PASSWORD != '' && secrets.VPS_RECEIVER_URL != ''
               && secrets.VPS_RECEIVER_TOKEN != '' && secrets.VPS_APP_DEPLOY_KEY != '' }}
         run: |
           [[ "$APP" =~ ^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$ ]] || { echo "::error::bad app name '$APP'"; exit 1; }
-          [ "$HAVE_SECRETS" = true ] || { echo "::error::$APP's secrets are missing (vps-gitops: sudo bash bootstrap/app-onboard.sh $APP prints them)"; exit 1; }
+          [ "$HAVE_SECRETS" = true ] || { echo "::error::$APP's secrets or variables are missing in the Environment vps (vps-gitops README, phase 2, steps 2 and 6)"; exit 1; }
           n=0
           while IFS= read -r line; do
             line=${line//[[:space:]]/}; [ -n "$line" ] || continue
@@ -117,7 +111,7 @@ jobs:
           [ "$n" -gt 0 ] || { echo "::error::no components"; exit 1; }
           echo "t_start=$(date +%s)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (runs with the secrets in the job: pinned)
         with:
           persist-credentials: false
 
@@ -142,10 +136,12 @@ jobs:
           echo "t_built=$(date +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Join the tailnet (tag:ci-deploy reaches only :8446 and :8447 on the VPS)
-        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0 (receives the OAuth secret: pinned)
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0 (gets the job's OIDC token: pinned)
         with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          # Workload identity: Tailscale trusts GitHub's OIDC token for this repo's Environment vps
+          # (subject repo:<owner>/<repo>:environment:vps) and lets it join only as tag:ci-deploy.
+          oauth-client-id: ${{ vars.TS_OIDC_CLIENT_ID }}
+          audience: ${{ vars.TS_OIDC_AUDIENCE }}
           tags: ${{ inputs.tailscale-tag }}
 
       - name: Resolve the VPS on the tailnet
@@ -173,8 +169,9 @@ jobs:
           # loaded into Docker. The credentials go through a 0600 auth file, not the command line.
           command -v skopeo >/dev/null || sudo NEEDRESTART_MODE=l DEBIAN_FRONTEND=noninteractive apt-get install -y skopeo >/dev/null
           work=$(mktemp -d)
-          ( umask 077; jq -n --arg r "$VPS_REGISTRY" --arg a "$(printf '%s:%s' "$VPS_REGISTRY_USER" "$VPS_REGISTRY_PASSWORD" | base64 -w0)" \
-              '{auths: {($r): {auth: $a}}}' > "$work/auth.json" )
+          # (the credentials reach jq through its environment, not its argv)
+          ( umask 077; AUTH=$(printf '%s:%s' "$VPS_REGISTRY_USER" "$VPS_REGISTRY_PASSWORD" | base64 -w0) \
+              jq -n --arg r "$VPS_REGISTRY" '{auths: {($r): {auth: $ENV.AUTH}}}' > "$work/auth.json" )
           tls=(); [ "$REGISTRY_SCHEME" = https ] || tls=(--dest-tls-verify=false)
           accept='application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json'
           images=""
@@ -202,11 +199,10 @@ jobs:
           GH_API_TOKEN: ${{ github.token }}
         run: |
           work=$(mktemp -d)
-          # kustomize, checksum-verified
+          # kustomize, pinned by its sha256 (it runs next to the deploy key)
           k="https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}"
           curl -fsSL -o "$work/kustomize.tgz" "$k/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
-          want=$(curl -fsSL "$k/checksums.txt" | awk -v f="kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" '$2 == f {print $1}')
-          echo "$want  $work/kustomize.tgz" | sha256sum -c - >/dev/null
+          echo "$KUSTOMIZE_SHA256  $work/kustomize.tgz" | sha256sum -c - >/dev/null
           tar -xzf "$work/kustomize.tgz" -C "$work" kustomize
           # The write deploy key (this repo only) and GitHub's host keys from its API (TLS).
           ( umask 077; printf '%s\n' "$VPS_APP_DEPLOY_KEY" > "$work/deploy_key" )
