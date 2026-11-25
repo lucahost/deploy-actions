@@ -16,6 +16,8 @@ name: Deploy an app to the VPS cluster
 #   5. call the app's Flux Receiver (HMAC-signed): Flux fetches at once instead of at its 10-min poll
 #   6. wait until Flux applied that commit and the workloads are healthy (GET /status/<app>, which
 #      returns Flux's Kustomization <app>); fail the job if it fails or doesn't converge in time
+#   With publish-only (before an app's cutover) the job stops after 4: the digests are in the deploy
+#   repo, but Flux doesn't run the app yet.
 #
 # Steps read only env (never ${{ }} inside a script), so .github/workflows/vps-deploy-selftest.yml
 # can run these exact scripts against a local registry, git repo and Receiver.
@@ -43,6 +45,15 @@ on:
         required: false
         type: number
         default: 300
+      publish-only:
+        description: >-
+          Before the app's cutover: build, push and bump lucahost/vps-app-<app> only. Flux doesn't run
+          the app yet (its Kustomization comes with the cutover), so the Receiver isn't called and
+          nothing is waited for; the app's old deploy keeps serving it (dual-publish, vps-gitops
+          docs/runbooks/README.md). The cutover only has to apply digests that are already there.
+        required: false
+        type: boolean
+        default: false
       tailscale-tag:
         description: The tag the runner joins the tailnet with (the ACL lets it reach only :8446 and :8447)
         required: false
@@ -259,6 +270,7 @@ jobs:
 
       - name: Call ${{ inputs.app }}'s Flux Receiver
         id: notify
+        if: ${{ !inputs.publish-only }}
         env:
           BUMP_SHA: ${{ steps.bump.outputs.bump-sha }}
           VPS_RECEIVER_URL: ${{ secrets.VPS_RECEIVER_URL }}
@@ -279,6 +291,7 @@ jobs:
 
       - name: Wait until Flux applied it and ${{ inputs.app }} is healthy
         id: wait
+        if: ${{ !inputs.publish-only }}
         env:
           BUMP_SHA: ${{ steps.bump.outputs.bump-sha }}
           VPS_RECEIVER_URL: ${{ secrets.VPS_RECEIVER_URL }}
@@ -319,6 +332,7 @@ jobs:
           T_LIVE: ${{ steps.wait.outputs.t_live }}
           IMAGES: ${{ steps.push.outputs.images }}
           BUMP_SHA: ${{ steps.bump.outputs.bump-sha }}
+          PUBLISH_ONLY: ${{ inputs.publish-only }}
         run: |
           d() { [ -n "$1" ] && [ -n "$2" ] && echo "$(( $2 - $1 )) s" || echo "–"; }
           committed=$(git log -1 --format=%ct "$SHA" 2>/dev/null || true)
@@ -336,6 +350,10 @@ jobs:
             echo "| **commit → live** | **$(d "$committed" "$T_LIVE")** |"
             echo
             echo "Deploy commit: \`${BUMP_SHA:-–}\`"
+            if [ "$PUBLISH_ONLY" = true ]; then
+              echo
+              echo "**Published only** (publish-only): pushed and bumped; Flux doesn't run $APP yet, so no Receiver call and no wait."
+            fi
             echo
             echo '```'; printf '%s' "${IMAGES:-–}"; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

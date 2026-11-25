@@ -6,7 +6,9 @@
 - every action it uses is pinned to a 40-character commit SHA;
 - no ${{ }} expression inside a run: script (steps read env only);
 - smoke.yml passes the secrets with inherit only and grants id-token: write; the README's caller
-  example does too; the check step reports each missing name (true/false, never a value).
+  example does too; the check step reports each missing name (true/false, never a value);
+- publish-only (boolean, default false) skips exactly the Receiver call and the wait: every step up
+  to the bump runs either way, and the summary always.
 usage: structure.py <vps-deploy.yml> <smoke.yml> [README.md]
 """
 import re
@@ -60,8 +62,22 @@ for k, v in check.get("env", {}).items():
         problems.append(f"{k} must be a true/false test, never a value")
 if (smoke.get("permissions") or {}).get("id-token") != "write":
     problems.append("smoke.yml doesn't grant id-token: write")
+# publish-only (dual-publish before a cutover): skips exactly the Receiver call and the wait.
+po = (call.get("inputs") or {}).get("publish-only") or {}
+if po.get("type") != "boolean" or po.get("default") is not False:
+    problems.append("input publish-only must be a boolean defaulting to false")
+for st in job["steps"]:
+    sid, cond = st.get("id"), str(st.get("if", ""))
+    if sid in ("notify", "wait"):
+        if cond != "${{ !inputs.publish-only }}":
+            problems.append(f"step {sid} must have 'if: ${{{{ !inputs.publish-only }}}}' (got {cond!r})")
+    elif "publish-only" in cond:
+        problems.append(f"step {sid or st.get('name')} must not depend on publish-only")
+summary = next((st for st in job["steps"] if st.get("name") == "Summary"), {})
+if summary.get("if") != "always()":
+    problems.append("the Summary step must run always()")
 for p in problems:
     print("   FAIL: " + p)
 if problems:
     sys.exit(1)
-print("   ok: Environment vps, push/dispatch on main only, OIDC, SHA pins, callers inherit secrets, check names each one, no ${{ }} in scripts")
+print("   ok: Environment vps, push/dispatch on main only, OIDC, SHA pins, callers inherit secrets, check names each one, no ${{ }} in scripts, publish-only skips only the Receiver and the wait")

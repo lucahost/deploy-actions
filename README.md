@@ -45,6 +45,20 @@ credentials and no tailnet identity.
 `components`: one per line, `<image>=<build context>[:<Dockerfile>]`; the image becomes
 `registry.internal/<app>/<image>` in the deploy repo. `GIT_SHA` is passed as a build argument.
 
+`publish-only` (default `false`): **dual-publish before an app's cutover.** The job builds, pushes and
+bumps `lucahost/vps-app-<app>`, then stops: no Receiver call, no wait, because Flux doesn't run the
+app until its cutover adds the Kustomization. The app's old deploy keeps serving it meanwhile, and
+the window only has to apply digests that are already in the deploy repo. One repository variable
+switches both workflows at once, so the old and the new deploy never both run the app:
+
+```yaml
+    with:
+      app: biergit
+      components: |
+        backend=backend:backend/Biergit.Api/Dockerfile
+      publish-only: ${{ vars.VPS_LIVE != 'true' }}   # the old deploy's job: if: vars.VPS_LIVE != 'true'
+```
+
 **In the app's source repo, Settings → Environments → New environment `vps`.** Set "Deployment
 branches and tags" to *Selected branches*, rule `main`. Then add:
 
