@@ -155,7 +155,7 @@ jobs:
           # TLS (tailscale serve's certificate) needs the VPS's tailnet name; pin it to the peer's IP
           # rather than rely on MagicDNS on the runner.
           host=${VPS_REGISTRY%%:*}
-          ip=$(tailscale status --json | jq -r --arg h "$host." '[.Peer[] | select(.DNSName == $h) | .TailscaleIPs[0]][0] // empty')
+          ip=$(sudo tailscale status --json | jq -r --arg h "$host." '[.Peer[] | select(.DNSName == $h) | .TailscaleIPs[0]][0] // empty')
           [ -n "$ip" ] || { echo "::error::$host isn't a peer this runner can see (Tailscale ACL for the tag?)"; exit 1; }
           echo "$ip $host" | sudo tee -a /etc/hosts >/dev/null
           echo "$host → $ip"
