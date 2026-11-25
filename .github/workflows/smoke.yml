@@ -1,0 +1,27 @@
+name: smoke → VPS
+
+# The smoke app's own CI, and the deploy path's end-to-end proof: every merge that touches the
+# smoke app or the deploy workflow builds smoke/, pushes it as the smoke user, bumps
+# lucahost/vps-app-smoke and waits until Flux runs it (the job summary has the timings). Its
+# credentials are the smoke app's alone, in this repo's Environment "vps" (main only; vps-gitops:
+# app-onboard.sh smoke). A dispatch from another branch is skipped.
+on:
+  push:
+    branches: [main]
+    paths:
+      - smoke/**
+      - .github/workflows/smoke.yml
+      - .github/workflows/vps-deploy.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write   # vps-deploy.yml joins the tailnet with this run's OIDC token
+
+jobs:
+  # Its credentials are in this repo's Environment "vps" (main only); none are passed here.
+  deploy:
+    uses: ./.github/workflows/vps-deploy.yml
+    with:
+      app: smoke
+      components: hello=smoke

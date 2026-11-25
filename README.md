@@ -1,6 +1,62 @@
 # deploy-actions
 
-Shared GitHub Actions for deploying static `*.hostettler.io` sites to the Hetzner VPS.
+Shared GitHub Actions for deploying to the Hetzner VPS: apps into its k3s cluster
+(`vps-deploy.yml`, phase 2 of [lucahost/vps-gitops](https://github.com/lucahost/vps-gitops)) and
+static `*.hostettler.io` sites (`deploy-static.yml`).
+
+## `vps-deploy.yml` (reusable): an app into the VPS cluster
+
+For an app that has a tenant in vps-gitops and its own deploy repo `lucahost/vps-app-<app>`. The
+job builds each component on the GitHub runner, joins the tailnet as `tag:ci-deploy` (which may
+reach only the VPS's registry on :8446 and its Receivers/status on :8447), pushes
+`<app>/<component>:<git sha>` as the app's own registry user, commits the digest-pinned bump to
+`lucahost/vps-app-<app>` with that repo's own write deploy key, calls the app's own Flux Receiver,
+and waits until Flux has applied that commit and the workloads are healthy (`GET /status/<app>`
+returns Flux's Kustomization). It fails if Flux reports a failure or nothing converges within
+`wait-seconds` (default 300). The job summary lists the time of each step and commit → live.
+
+```yaml
+permissions:
+  contents: read
+  id-token: write            # Tailscale workload identity
+jobs:
+  deploy:
+    # A reviewed commit of this repo, not a branch (Renovate proposes updates).
+    uses: lucahost/deploy-actions/.github/workflows/vps-deploy.yml@<40-character commit sha>   # vps-deploy, YYYY-MM-DD
+    with:
+      app: biergit
+      components: |
+        api=backend
+        web=frontend
+```
+
+Get the SHA with `git ls-remote https://github.com/lucahost/deploy-actions refs/heads/main` after
+reviewing that commit. No `secrets:` are passed: the job reads them itself from the caller's
+**Environment `vps`**. It runs only for a push to `main` or a `workflow_dispatch` on `main`, and
+the Environment's deployment branch policy (main only) enforces the branch. A branch, a PR or a dispatch from a branch gets no
+credentials and no tailnet identity.
+
+`components`: one per line, `<image>=<build context>[:<Dockerfile>]`; the image becomes
+`registry.internal/<app>/<image>` in the deploy repo. `GIT_SHA` is passed as a build argument.
+
+**In the app's source repo, Settings → Environments → New environment `vps`.** Set "Deployment
+branches and tags" to *Selected branches*, rule `main`. Then add:
+
+| Kind | Name | From |
+|---|---|---|
+| secret | `VPS_REGISTRY`, `VPS_REGISTRY_USER`, `VPS_REGISTRY_PASSWORD`, `VPS_RECEIVER_URL`, `VPS_RECEIVER_TOKEN`, `VPS_APP_DEPLOY_KEY` | printed by `app-onboard.sh <app>` on the VPS (vps-gitops README, phase 2) |
+| variable | `TS_OIDC_CLIENT_ID`, `TS_OIDC_AUDIENCE` | the app's Tailscale federated identity for subject `repo:lucahost/<repo>:environment:vps`, tag `tag:ci-deploy` (vps-gitops README, phase 2) |
+
+No repository or organisation secrets. Tailscale is joined with workload identity: GitHub's OIDC
+token for that repo's Environment `vps`, which Tailscale lets join only as `tag:ci-deploy`. There
+is no long-lived Tailscale secret. With these, the job can push only to `<app>/`, write only
+`lucahost/vps-app-<app>`, and trigger only that app's Receiver. The platform (`tenant-images`,
+`flux-tenant`, NetworkPolicies) bounds what the app can run. Rollback: `git revert` the deploy
+commit in `lucahost/vps-app-<app>`.
+
+**The smoke app** (`smoke/`, `.github/workflows/smoke.yml`) is the end-to-end proof: a merge that
+touches it or `vps-deploy.yml` deploys it to the VPS. `vps-deploy-selftest.yml` runs the
+workflow's own step scripts against a local registry, git repo and fake Flux on every PR.
 
 ## `deploy-static.yml` (reusable)
 
