@@ -46,7 +46,10 @@ besides that Environment's, since `inherit` would carry them too.
   - the tailnet host;
   - the registry user (the app's name);
   - the Receiver path (derived from its token);
-  - the Tailscale client ID and audience (not secrets).
+  - the Tailscale client ID and audience (not secrets). The identity's `job_workflow_ref` claim
+    (`…/vps-deploy.yml@*`) also matches this file on other branches and old commits: a lucahost
+    main job calling `vps-deploy.yml@<branch>` would join as `tag:ci-deploy`, which reaches only
+    the VPS's :8446 and :8447. Callers pin a reviewed SHA, never a branch.
 - **`vps.yaml`'s schema** is `vps/chart/values.schema.json`. Unknown fields are errors, and the
   secure defaults (Pod Security restricted, `hostUsers: false`, a read-only root, drop ALL,
   limits, probes) aren't fields at all. Example: `test/vps-deploy/demo/vps.yaml`.
