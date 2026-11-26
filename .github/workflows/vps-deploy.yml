@@ -65,9 +65,14 @@ jobs:
       VPS_HOST: hetzner-ubuntu-16gb.zuul-stonecat.ts.net
       REGISTRY_PORT: "8446"
       HOOK_PORT: "8447"
-      # The one federated identity of docs/design.md (owner's one-time step 1); not secrets.
+      # The federated identities of docs/design.md (owner's one-time step 1); not secrets. GitHub gives
+      # repos created after 2026-07-15 an immutable OIDC subject (repo:lucahost@<owner id>/<repo>@<repo
+      # id>:…), which subject repo:lucahost/* doesn't match: those join with the second identity
+      # (subject repo:lucahost@5907956/*, the same claims). The job picks by its own token's sub.
       TS_OIDC_CLIENT_ID: TMABUofcLG11CNTRL-ktb1epw53B11CNTRL
       TS_OIDC_AUDIENCE: api.tailscale.com/TMABUofcLG11CNTRL-ktb1epw53B11CNTRL
+      TS_OIDC_CLIENT_ID_IMMUTABLE: ""
+      TS_OIDC_AUDIENCE_IMMUTABLE: ""
       FLUX_VERSION: 2.9.6
       FLUX_SHA256: b4d22673e9246cbd628881f1a9ef3b090085dced291e42d804555cee8e8d42c5   # linux_amd64.tar.gz
     steps:
@@ -116,12 +121,34 @@ jobs:
           done
           { echo "names=$(jq -c '[.[].name]' <<<"$builds")"; echo "t_built=$(date +%s)"; } >> "$GITHUB_OUTPUT"
 
+      - name: Pick the Tailscale identity by this job's OIDC subject
+        id: identity
+        if: ${{ env.TS_OIDC_CLIENT_ID != '' }}
+        run: |
+          # The job's own token (GitHub's endpoint and request token are the runner's env): only its sub
+          # claim is read, the token is never printed or kept.
+          tok=$(curl -fsS --max-time 20 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$TS_OIDC_AUDIENCE" | jq -r '.value // empty')
+          p=$(cut -d. -f2 <<<"$tok" | tr '_-' '/+'); tok=""
+          while [ $(( ${#p} % 4 )) -ne 0 ]; do p="$p="; done
+          sub=$(base64 -d <<<"$p" 2>/dev/null | jq -r '.sub // empty')
+          case "$sub" in
+            repo:lucahost/*) id=$TS_OIDC_CLIENT_ID; aud=$TS_OIDC_AUDIENCE;;
+            repo:lucahost@*)
+              id=$TS_OIDC_CLIENT_ID_IMMUTABLE; aud=$TS_OIDC_AUDIENCE_IMMUTABLE
+              [ -n "$id" ] && [ -n "$aud" ] \
+                || { echo "::error::this repo's OIDC subject is immutable ($sub): vps-deploy.yml has no second Tailscale identity yet (TS_OIDC_*_IMMUTABLE, the owner's step)"; exit 1; };;
+            *) echo "::error::unexpected OIDC subject '$sub'"; exit 1;;
+          esac
+          echo "OIDC subject $sub → Tailscale client $id"
+          { echo "client-id=$id"; echo "audience=$aud"; } >> "$GITHUB_OUTPUT"
+
       - name: Join the tailnet (tag:ci-deploy reaches only :8446 and :8447 on the VPS)
         if: ${{ env.TS_OIDC_CLIENT_ID != '' }}
         uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
         with:
-          oauth-client-id: ${{ env.TS_OIDC_CLIENT_ID }}
-          audience: ${{ env.TS_OIDC_AUDIENCE }}
+          oauth-client-id: ${{ steps.identity.outputs.client-id }}
+          audience: ${{ steps.identity.outputs.audience }}
           tags: tag:ci-deploy
 
       - name: Resolve the VPS on the tailnet

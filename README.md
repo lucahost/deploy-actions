@@ -50,6 +50,11 @@ besides that Environment's, since `inherit` would carry them too.
     (`…/vps-deploy.yml@*`) also matches this file on other branches and old commits: a lucahost
     main job calling `vps-deploy.yml@<branch>` would join as `tag:ci-deploy`, which reaches only
     the VPS's :8446 and :8447. Callers pin a reviewed SHA, never a branch.
+  - **Two identities, picked by the job's OIDC subject.** Repos created after 2026-07-15 get an
+    immutable subject from GitHub (`repo:lucahost@5907956/<repo>@<repo id>:…`, no opt-out), which
+    the first identity's subject `repo:lucahost/*` doesn't match. The second identity has subject
+    `repo:lucahost@5907956/*` and the same claims, scope and tag (`TS_OIDC_*_IMMUTABLE`). A step
+    reads only the `sub` of the job's own token and picks the pair, so no repo needs an input.
 - **`vps.yaml`'s schema** is `vps/chart/values.schema.json`. Unknown fields are errors, and the
   secure defaults (Pod Security restricted, `hostUsers: false`, a read-only root, drop ALL,
   limits, probes) aren't fields at all. Example: `test/vps-deploy/demo/vps.yaml`.
@@ -66,7 +71,9 @@ besides that Environment's, since `inherit` would carry them too.
 - **`vps-deploy-selftest.yml`** runs the step scripts, the render and the pack against a local
   registry and a fake Flux.
 - **`tailscale-identity-check.yml`** (manual) proves the identity refuses everything but this
-  workflow on main in Environment `vps`.
+  workflow on main in Environment `vps`. Dispatched here, it checks the first identity. For the
+  second, a repo with an immutable subject calls it (`workflow_call`, with permissions
+  `id-token: write` and `actions: read`), and it picks the pair the same way vps-deploy.yml does.
 
 **The smoke app** (`smoke/`, `.github/workflows/smoke.yml`) is the end-to-end proof. It deploys
 with `vps-deploy.yml` (`smoke/vps.yaml`; vps-gitops `tenants/smoke.yaml`): a merge that touches it,
