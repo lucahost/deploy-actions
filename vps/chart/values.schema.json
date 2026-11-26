@@ -102,6 +102,11 @@
         "pgdata": {"$ref": "#/definitions/path"},
         "secret": {"$ref": "#/definitions/name"},
         "fresh": {"type": "boolean"},
+        "args": {
+          "description": "-c <name>=<value> for the server: tuning settings only (memory, WAL and checkpoints, planner costs, parallelism, autovacuum, slow-query logging). Never listen_addresses, hba, ssl, preload libraries or any other flag.",
+          "type": "array", "maxItems": 30,
+          "items": {"type": "string", "pattern": "^-c (shared_buffers|effective_cache_size|maintenance_work_mem|work_mem|temp_buffers|wal_buffers|min_wal_size|max_wal_size|checkpoint_completion_target|checkpoint_timeout|random_page_cost|seq_page_cost|effective_io_concurrency|default_statistics_target|jit|max_connections|max_worker_processes|max_parallel_workers|max_parallel_workers_per_gather|max_parallel_maintenance_workers|autovacuum_naptime|autovacuum_vacuum_scale_factor|autovacuum_analyze_scale_factor|autovacuum_vacuum_cost_limit|log_min_duration_statement)=([0-9]+(\\.[0-9]+)?(B|kB|MB|GB|TB|us|ms|s|min|h|d)?|on|off)$"}
+        },
         "backup": {
           "type": "object", "additionalProperties": false, "required": ["schedule"],
           "properties": {

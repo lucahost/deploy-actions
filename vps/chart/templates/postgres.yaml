@@ -49,6 +49,20 @@ spec:
       containers:
         - name: postgres
           image: {{ .image }}
+          {{- with .args }}
+          # postgres.args: "-c <name>=<value>", the schema's tuning settings only. As two arguments
+          # each; the image's entrypoint puts "postgres" in front of a first argument starting with -.
+          {{- $seen := dict }}
+          args:
+            {{- range . }}
+            {{- $kv := trimPrefix "-c " . }}
+            {{- $n := index (splitList "=" $kv) 0 }}
+            {{- if hasKey $seen $n }}{{ fail (printf "postgres.args: %s twice" $n) }}{{ end }}
+            {{- $_ := set $seen $n true }}
+            - "-c"
+            - {{ $kv | quote }}
+            {{- end }}
+          {{- end }}
           env:
             {{- with .pgdata }}
             - {name: PGDATA, value: {{ . }}}

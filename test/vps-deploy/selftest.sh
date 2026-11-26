@@ -133,6 +133,8 @@ expect_sf=$'Deployment/api demo-certs 288 /app/certs True\nCronJob/cleanup demo-
 [ "$sf" = "$expect_sf" ] && grep -q 'secretName: demo-certs-' "$W/built.yaml" \
   && ok "secretFiles: Secret demo-certs-<hash> read-only at /app/certs, 0440, in api and its cron" || fail "secretFiles: $sf"
 [ "$(grep -c 'fsGroup: 1654' "$W/built.yaml")" = 2 ] && ok "… with fsGroup = api's gid (1654), only where secretFiles are" || fail "fsGroup: $(grep -c fsGroup "$W/built.yaml")"
+grep -A4 -- '- args:' "$W/built.yaml" | tr -d ' ' | grep -qx -- '-shared_buffers=128MB' \
+  && ok "postgres.args: -c shared_buffers=128MB (and random_page_cost) as the server's arguments" || fail "postgres args: $(grep -n -A5 -- '- args:' "$W/built.yaml" | head -8)"
 [ "$(grep -c 'shareProcessNamespace: true' "$W/built.yaml")" = 3 ] && ok "init: true → shareProcessNamespace in api and its cron (postgres has it anyway)" \
   || fail "shareProcessNamespace: $(grep -c 'shareProcessNamespace: true' "$W/built.yaml")"
 
@@ -192,6 +194,15 @@ rm "$APP_DIR/deploy/secrets/demo-env/PLAIN"
 printf 'app: demo\ncomponents:\n  web: {build: {context: web}, uid: 101, memory: 64Mi, securityContext: {privileged: true}}\n' > "$W/bad.yaml"
 if bash "$ROOT/vps/render.sh" "$W/bad.yaml" "$W/images.json" x "$W/bad.out" > "$W/bad.log" 2>&1; then fail "render took an unknown field"
 else grep -q "additional properties 'securityContext' not allowed" "$W/bad.log" && ok "render refuses fields that aren't in the schema (no securityContext overrides)" || fail "render failed for another reason: $(tail -2 "$W/bad.log")"; fi
+# postgres.args: tuning settings only, each name once
+pgbase='app: demo\ncomponents:\n  web: {build: {context: web}, uid: 101, memory: 64Mi}\npostgres:\n  image: docker.io/library/postgres:19@sha256:4ae330eb888b3b769aa542424859059d8e37507e365d3d48024446dacd8c4d8d\n  memory: 256Mi\n'
+for c in "listen:-c listen_addresses=*:does not match pattern" "preload:-c shared_preload_libraries=pg_stat_statements:does not match pattern" \
+         "flag:-k /tmp:does not match pattern" "twice:-c work_mem=8MB\", \"-c work_mem=16MB:postgres.args: work_mem twice"; do
+  IFS=: read -r what arg want <<<"$c"
+  printf "${pgbase}  args: [\"%s\"]\n" "$arg" > "$W/pg-$what.yaml"
+  if bash "$ROOT/vps/render.sh" "$W/pg-$what.yaml" "$W/images.json" x "$W/pg-$what.out" > "$W/pg-$what.log" 2>&1; then fail "render took postgres.args $arg"
+  else grep -q "$want" "$W/pg-$what.log" && ok "postgres.args refused: $arg" || fail "postgres.args $arg failed for another reason: $(tail -2 "$W/pg-$what.log")"; fi
+done
 
 echo
 if [ "$FAILED" -ne 0 ]; then echo "!! vps-deploy self-test FAILED"; exit 1; fi
