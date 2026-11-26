@@ -59,6 +59,10 @@ besides that Environment's, since `inherit` would carry them too.
     the app reads from disk. The component's CronJobs mount them too.
   - `init: true`: `shareProcessNamespace`, so the pause container is PID 1 and reaps orphans
     (compose's `init: true`; a .NET host as PID 1 can hang after a fatal start).
+  - `postgres.args: ["-c shared_buffers=256MB", …]`: the server's tuning settings, as `-c` arguments.
+    The schema allows only memory, WAL and checkpoint, planner-cost, parallelism, autovacuum and
+    slow-query-log settings, with plain values (a number with a unit, `on`, `off`). It never
+    allows `listen_addresses`, hba or ssl, preload libraries, or any other flag. Each name once.
 - **`vps-deploy-selftest.yml`** runs the step scripts, the render and the pack against a local
   registry and a fake Flux.
 - **`tailscale-identity-check.yml`** (manual) proves the identity refuses everything but this
