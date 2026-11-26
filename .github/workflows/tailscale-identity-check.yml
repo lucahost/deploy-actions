@@ -15,7 +15,15 @@ name: Tailscale identity check
 #   1. on main: no-environment and own-workflow must be refused;
 #   2. on any other branch: the same, and GitHub refuses Environment vps to the branch (deployment
 #      branch policy) before own-workflow starts, which counts as refused.
-on: workflow_dispatch
+#
+# The second identity (subject repo:lucahost@5907956/*, for repos with immutable OIDC subjects,
+# created after 2026-07-15) is checked from such a repo: a workflow there calls this one
+# (`uses: lucahost/deploy-actions/.github/workflows/tailscale-identity-check.yml@<sha>`, with
+# permissions contents: read, id-token: write, actions: read). The identity job picks the pair by
+# its own token's subject, as vps-deploy.yml does.
+on:
+  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -30,12 +38,27 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          repository: lucahost/deploy-actions   # this repo's vps-deploy.yml, also when called from an app repo
+          path: deploy-actions
           persist-credentials: false
       - id: read
         run: |
-          id=$(yq -r '.jobs.deploy.env.TS_OIDC_CLIENT_ID' .github/workflows/vps-deploy.yml)
-          aud=$(yq -r '.jobs.deploy.env.TS_OIDC_AUDIENCE' .github/workflows/vps-deploy.yml)
-          [ -n "$id" ] && [ -n "$aud" ] || { echo "::error::vps-deploy.yml has no TS_OIDC_* yet"; exit 1; }
+          f=deploy-actions/.github/workflows/vps-deploy.yml
+          # The job's own token: only its sub claim is read (as vps-deploy.yml's identity step).
+          tok=$(curl -fsS --max-time 20 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api.tailscale.com" | jq -r '.value // empty')
+          p=$(cut -d. -f2 <<<"$tok" | tr '_-' '/+'); tok=""
+          while [ $(( ${#p} % 4 )) -ne 0 ]; do p="$p="; done
+          sub=$(base64 -d <<<"$p" 2>/dev/null | jq -r '.sub // empty')
+          case "$sub" in
+            repo:lucahost/*) sfx="";;
+            repo:lucahost@*) sfx=_IMMUTABLE;;
+            *) echo "::error::unexpected OIDC subject '$sub'"; exit 1;;
+          esac
+          id=$(yq -r ".jobs.deploy.env.TS_OIDC_CLIENT_ID$sfx" "$f")
+          aud=$(yq -r ".jobs.deploy.env.TS_OIDC_AUDIENCE$sfx" "$f")
+          [ -n "$id" ] && [ "$id" != null ] && [ -n "$aud" ] && [ "$aud" != null ] || { echo "::error::vps-deploy.yml has no TS_OIDC_*$sfx yet"; exit 1; }
+          echo "OIDC subject $sub → the identity TS_OIDC_CLIENT_ID$sfx ($id)"
           { echo "client-id=$id"; echo "audience=$aud"; } >> "$GITHUB_OUTPUT"
 
   # The token has no environment claim.
@@ -94,8 +117,10 @@ jobs:
           bad=0
           for r in "no-environment|$NO_ENV_JOINED" "own-workflow|$OWN_JOINED"; do
             IFS='|' read -r name joined <<<"$r"
-            id=$(jq -r --arg n "$name" '.jobs[] | select(.name == $n) | .id' <<<"$jobs")
-            steps=$(jq -r --arg n "$name" '[.jobs[] | select(.name == $n) | .steps[]?] | length' <<<"$jobs")
+            # Called from another workflow, a job's name is "<caller job> / <name>".
+            sel='.jobs[] | select(.name == $n or (.name | endswith(" / " + $n)))'
+            id=$(jq -r --arg n "$name" "[$sel | .id][0] // empty" <<<"$jobs")
+            steps=$(jq -r --arg n "$name" "[$sel | .steps[]?] | length" <<<"$jobs")
             log=$(api "actions/jobs/$id/logs" 2>/dev/null || true)
             if [ "$joined" = true ]; then
               echo "::error::$name JOINED the tailnet"; bad=1
