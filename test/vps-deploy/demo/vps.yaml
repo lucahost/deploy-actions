@@ -16,6 +16,8 @@ components:
     health: /health
     env: {ASPNETCORE_URLS: "http://+:5000"}
     secretEnv: [demo-env]
+    secretFiles: {demo-certs: /app/certs}   # deploy/secrets/demo-certs/signing_pfx as /app/certs/signing_pfx
+    init: true
     writable: [/home/app]
     volumes: {files: /data}
     migrate:

@@ -55,6 +55,8 @@
           "secretEnv": {"type": "array", "items": {"$ref": "#/definitions/name"}},
           "writable": {"type": "array", "items": {"$ref": "#/definitions/path"}},
           "volumes": {"type": "object", "propertyNames": {"$ref": "#/definitions/name"}, "additionalProperties": {"$ref": "#/definitions/path"}},
+          "secretFiles": {"type": "object", "propertyNames": {"$ref": "#/definitions/name"}, "additionalProperties": {"$ref": "#/definitions/path"}},
+          "init": {"type": "boolean"},
           "replicas": {"type": "integer", "minimum": 0, "maximum": 3},
           "strategy": {"enum": ["RollingUpdate", "Recreate"]},
           "migrate": {

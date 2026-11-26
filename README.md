@@ -53,6 +53,12 @@ besides that Environment's, since `inherit` would carry them too.
 - **`vps.yaml`'s schema** is `vps/chart/values.schema.json`. Unknown fields are errors, and the
   secure defaults (Pod Security restricted, `hostUsers: false`, a read-only root, drop ALL,
   limits, probes) aren't fields at all. Example: `test/vps-deploy/demo/vps.yaml`.
+  - `secretEnv: [<secret>]`: every key of `deploy/secrets/<secret>/` as an environment variable.
+  - `secretFiles: {<secret>: <dir>}`: each key of `deploy/secrets/<secret>/` as a file in `<dir>`,
+    read-only, root:<the component's gid> 0440 (the pod's `fsGroup`). For certificates and keys
+    the app reads from disk. The component's CronJobs mount them too.
+  - `init: true`: `shareProcessNamespace`, so the pause container is PID 1 and reaps orphans
+    (compose's `init: true`; a .NET host as PID 1 can hang after a fatal start).
 - **`vps-deploy-selftest.yml`** runs the step scripts, the render and the pack against a local
   registry and a fake Flux.
 - **`tailscale-identity-check.yml`** (manual) proves the identity refuses everything but this

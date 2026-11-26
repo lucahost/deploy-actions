@@ -164,7 +164,7 @@ jobs:
         id: render
         # The chart and scripts of the deploy-actions commit below. test/vps-deploy/structure.py checks that
         # vps/ at that commit is vps/ at this file's commit (bump both together).
-        uses: lucahost/deploy-actions/vps@7b3cb8d6be1e2de577afb1f251d1cd2282a2b7d6 # vps render and pack
+        uses: lucahost/deploy-actions/vps@898fc9b71397a8c18071d3558978da0ceb7b5645 # vps render and pack
         with:
           file: ${{ inputs.file }}
           images: ${{ steps.push.outputs.images }}
