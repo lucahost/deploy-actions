@@ -29,9 +29,14 @@ if job.get("if") != "github.ref == 'refs/heads/main' && (github.event_name == 'p
     problems.append("job lacks the guard: main only, push or workflow_dispatch only")
 if (job.get("permissions") or {}).get("id-token") != "write":
     problems.append("job can't mint an OIDC token")
-used = set(re.findall(r"secrets\.([A-Z0-9_]+)", src))
+# The two secrets, each by name, or by name plus the per-app suffix (inputs.per-app-secrets):
+# secrets[format('<NAME>{0}', steps.names.outputs.suffix)], nothing else indexed.
+fmt = r"secrets\[format\('([A-Z0-9_]+)\{0\}', steps\.names\.outputs\.suffix\)\]"
+used = set(re.findall(r"secrets\.([A-Z0-9_]+)", src)) | set(re.findall(fmt, src))
 if used != {"VPS_REGISTRY_PASSWORD", "VPS_RECEIVER_TOKEN"}:
     problems.append(f"secrets referenced: {sorted(used)} (want only VPS_REGISTRY_PASSWORD, VPS_RECEIVER_TOKEN)")
+if len(re.findall(r"secrets\[", src)) != len(re.findall(fmt, src)):
+    problems.append("secrets[…] other than secrets[format('<NAME>{0}', steps.names.outputs.suffix)]")
 if "TS_OAUTH" in src:
     problems.append("TS_OAUTH_* referenced")
 pin = None

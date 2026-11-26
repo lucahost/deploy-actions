@@ -74,6 +74,7 @@ export RUNNER_TEMP=$W/runner; mkdir -p "$RUNNER_TEMP"
 deploy() {  # $1 = commit sha: check, build, push, render+pack (the action's scripts), publish, summary
   # Called with || (which turns off set -e inside), so every step returns on its own failure.
   export SHA=$1; rm -rf "$RUNNER_TEMP/artifact"; : > "$W/summary"
+  run_step names || { echo "!! names failed"; return 1; }
   run_step check || { echo "!! check failed"; return 1; }; APP=$(out check app); export APP
   run_step build || { echo "!! build failed"; return 1; }; NAMES=$(out build names); export NAMES
   run_step push || { echo "!! push failed"; return 1; }; IMAGES=$(out push images); export IMAGES
@@ -194,10 +195,24 @@ rm "$APP_DIR/deploy/secrets/demo-env/PLAIN"
 printf 'app: demo\ncomponents:\n  web: {build: {context: web}, uid: 101, memory: 64Mi, securityContext: {privileged: true}}\n' > "$W/bad.yaml"
 if bash "$ROOT/vps/render.sh" "$W/bad.yaml" "$W/images.json" x "$W/bad.out" > "$W/bad.log" 2>&1; then fail "render took an unknown field"
 else grep -q "additional properties 'securityContext' not allowed" "$W/bad.log" && ok "render refuses fields that aren't in the schema (no securityContext overrides)" || fail "render failed for another reason: $(tail -2 "$W/bad.log")"; fi
+# serviceAccount: true: that component's pods run as ServiceAccount <component> with its token; no other
+printf 'app: demo\ncomponents:\n  api: {build: {context: api}, uid: 1654, memory: 64Mi, serviceAccount: true}\n  web: {build: {context: web}, uid: 101, memory: 64Mi}\n' > "$W/sa.yaml"
+if bash "$ROOT/vps/render.sh" "$W/sa.yaml" "$W/images.json" x "$W/sa.out" > "$W/sa.log" 2>&1; then
+  sa=$(python3 -I -c 'import sys, yaml
+for d in yaml.safe_load_all(open(sys.argv[1])):
+    if d and d["kind"] == "Deployment":
+        t = d["spec"]["template"]["spec"]; print(d["metadata"]["name"], t.get("serviceAccountName", "-"), t["automountServiceAccountToken"])' "$W/sa.out" | sort | tr '\n' ' ')
+  [ "$sa" = "api api True web - False " ] && ok "serviceAccount: api runs as ServiceAccount api with its token; web keeps none" || fail "serviceAccount: $sa"
+else fail "render with serviceAccount: $(tail -2 "$W/sa.log")"; fi
+# per-app-secrets: a repo with several apps names each app's two secrets with its suffix
+expect_sfx() { [ "$(cd "$APP_DIR" && PER_APP_SECRETS=$1 FILE=$2 run_step names >/dev/null && out names suffix)" = "$3" ]; }
+expect_sfx false vps.yaml "" && expect_sfx true vps.yaml _DEMO && ok "secrets' names: plain by default, VPS_*_DEMO with per-app-secrets" \
+  || fail "the per-app suffix: $(cd "$APP_DIR" && PER_APP_SECRETS=true run_step names; out names suffix)"
 # postgres.args: tuning settings only, each name once
 pgbase='app: demo\ncomponents:\n  web: {build: {context: web}, uid: 101, memory: 64Mi}\npostgres:\n  image: docker.io/library/postgres:19@sha256:4ae330eb888b3b769aa542424859059d8e37507e365d3d48024446dacd8c4d8d\n  memory: 256Mi\n'
 for c in "listen:-c listen_addresses=*:does not match pattern" "preload:-c shared_preload_libraries=pg_stat_statements:does not match pattern" \
-         "flag:-k /tmp:does not match pattern" "twice:-c work_mem=8MB\", \"-c work_mem=16MB:postgres.args: work_mem twice"; do
+         "flag:-k /tmp:does not match pattern" "ssl:-c ssl=on:does not match pattern" "statement:-c log_statement=everything:does not match pattern" \
+         "twice:-c work_mem=8MB\", \"-c work_mem=16MB:postgres.args: work_mem twice"; do
   IFS=: read -r what arg want <<<"$c"
   printf "${pgbase}  args: [\"%s\"]\n" "$arg" > "$W/pg-$what.yaml"
   if bash "$ROOT/vps/render.sh" "$W/pg-$what.yaml" "$W/images.json" x "$W/pg-$what.out" > "$W/pg-$what.log" 2>&1; then fail "render took postgres.args $arg"
