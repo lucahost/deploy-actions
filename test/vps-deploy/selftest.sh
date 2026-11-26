@@ -114,6 +114,27 @@ for k in 'readOnlyRootFilesystem: true' 'allowPrivilegeEscalation: false' 'runAs
 done
 grep -q 'name: demo-env-' "$W/built.yaml" && grep -q 'JWT_SECRET:' "$W/built.yaml" && ok "secretGenerator: Secret demo-env-<hash>, its key, the references rewritten" || fail "no generated Secret"
 
+info "a parked app (vps-gitops As built 21): live is the parked artifact, a deploy only publishes"
+# What `vps` does on a rollback or reset, as vps-cutover: an empty kustomization annotated parked,
+# pushed as demo/manifests:parked, its manifest PUT under live.
+mkdir -p "$W/parked" "$W/cut-docker"
+printf '%s\n' 'apiVersion: kustomize.config.k8s.io/v1beta1' 'kind: Kustomization' 'resources: []' > "$W/parked/kustomization.yaml"
+AUTH=$(printf 'vps-cutover:%s' "$CUT_PW" | base64 -w0) jq -n '{auths: {"127.0.0.1:5000": {auth: $ENV.AUTH}}}' > "$W/cut-docker/config.json"
+if DOCKER_CONFIG=$W/cut-docker flux push artifact oci://127.0.0.1:5000/demo/manifests:parked --path "$W/parked" --source vps-gitops \
+     --revision "parked@sha1:$(printf '%040d' 0)" --annotations vps.hostettler.io/parked=true --reproducible --insecure-registry > "$W/park.log" 2>&1; then
+  pmt=application/vnd.oci.image.manifest.v1+json
+  printf 'user = "vps-cutover:%s"\n' "$CUT_PW" | curl -fsS -K - -H "Accept: $pmt" -o "$W/parked.json" http://127.0.0.1:5000/v2/demo/manifests/manifests/parked \
+    && printf 'user = "vps-cutover:%s"\n' "$CUT_PW" | curl -fsS -K - -X PUT -H "Content-Type: $pmt" --data-binary @"$W/parked.json" -o /dev/null \
+         http://127.0.0.1:5000/v2/demo/manifests/manifests/live && ok "live → the parked artifact (what a rollback does)" || fail "parking live"
+else fail "pushing the parked artifact: $(tail -3 "$W/park.log")"; fi
+parked=$(printf 'user = "demo:%s"\n' "$DEMO_PW" | curl -s -I -K - -H 'Accept: application/vnd.oci.image.manifest.v1+json' http://127.0.0.1:5000/v2/demo/manifests/manifests/live | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:" {print $2}')
+SHAP=$(printf '%040d' 9)
+deploy "$SHAP" > "$W/deployp.log" 2>&1 || { cat "$W/deployp.log"; die "the deploy while parked failed"; }
+[ "$(out publish live)" = false ] && ok "live parked: published only" || fail "live=$(out publish live) while parked"
+grep -q "live is parked" "$W/deployp.log" && grep -q "Published only" "$W/summary" && ok "… it says so, and the summary too" || fail "no 'live is parked' / 'Published only'"
+now=$(printf 'user = "demo:%s"\n' "$DEMO_PW" | curl -s -I -K - -H 'Accept: application/vnd.oci.image.manifest.v1+json' http://127.0.0.1:5000/v2/demo/manifests/manifests/live | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:" {print $2}')
+[ -n "$parked" ] && [ "$now" = "$parked" ] && ok "live still the parked artifact ($now)" || fail "live moved while parked: $parked → $now"
+
 info "the cutover makes live; the next deploy moves it and waits"
 # What `vps cutover` does as vps-cutover: the artifact's manifest PUT under "live".
 mt=application/vnd.oci.image.manifest.v1+json; d1=$(out publish digest)

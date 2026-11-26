@@ -10,7 +10,7 @@ name: Deploy an app to the VPS cluster (v2)
 #   3. push registry.internal/<app>/<image>:<sha> as the app's own registry user; read the digests
 #   4. render vps.yaml with vps/chart (this commit), pack it with deploy/secrets and deploy/extra
 #   5. push the artifact <app>/manifests:<sha>
-#   6. if <app>/manifests:live exists (the app is switched over: `vps cutover` created it), move live
+#   6. if <app>/manifests:live exists and isn't parked (the app is switched over: `vps cutover` moved it), move live
 #      to this artifact, call the app's Receiver and wait until Flux applied it and it is healthy.
 #      Otherwise stop: the app still runs on its old deploy, and the cutover activates a
 #      published artifact.
@@ -196,14 +196,17 @@ jobs:
           digest=$(grep -oE 'sha256:[a-f0-9]{64}' <<<"$out" | tail -1)
           [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "$out"; echo "::error::no digest from flux push artifact"; exit 1; }
           echo "pushed $APP/manifests:$SHA ($digest)"
-          # Switched over? The cutover created live; until then this run only publishes.
-          code=$(printf 'user = "%s:%s"\n' "$APP" "$VPS_REGISTRY_PASSWORD" | curl -s -o /dev/null -w '%{http_code}' --max-time 20 -K - -I \
-            -H 'Accept: application/vnd.oci.image.manifest.v1+json' "${REGISTRY_SCHEME:-https}://$reg/v2/$APP/manifests/manifests/live")
+          # Switched over? The cutover created live; until then this run only publishes. A rollback or
+          # `vps reset` parks the app instead (vps-gitops As built 21): live is then the platform's empty
+          # artifact, annotated vps.hostettler.io/parked, and this run only publishes too.
+          mt=application/vnd.oci.image.manifest.v1+json
+          code=$(printf 'user = "%s:%s"\n' "$APP" "$VPS_REGISTRY_PASSWORD" | curl -s -o "$work/live.json" -w '%{http_code}' --max-time 20 -K - \
+            -H "Accept: $mt" "${REGISTRY_SCHEME:-https}://$reg/v2/$APP/manifests/manifests/live")
+          if [ "$code" = 200 ] && [ "$(jq -r '.annotations["vps.hostettler.io/parked"] // ""' "$work/live.json" 2>/dev/null)" = true ]; then code=parked; fi
           case "$code" in
             200) live=true
                  # Moving a tag is the distribution API itself: this artifact's manifest, byte for byte,
                  # PUT under "live" (flux tag artifact has no flag for the self-test's plain-HTTP registry).
-                 mt=application/vnd.oci.image.manifest.v1+json
                  if ! printf 'user = "%s:%s"\n' "$APP" "$VPS_REGISTRY_PASSWORD" | curl -fsS --max-time 30 -K - -H "Accept: $mt" \
                         -o "$work/manifest.json" "${REGISTRY_SCHEME:-https}://$reg/v2/$APP/manifests/manifests/$digest" \
                     || ! printf 'user = "%s:%s"\n' "$APP" "$VPS_REGISTRY_PASSWORD" | curl -fsS --max-time 30 -K - -X PUT -H "Content-Type: $mt" \
@@ -212,6 +215,7 @@ jobs:
                  fi
                  echo "live → $SHA ($digest)";;
             404) live=false; echo "no live tag: $APP isn't switched over yet, so this run only publishes";;
+            parked) live=false; echo "live is parked (rolled back or reset): $APP isn't switched over, so this run only publishes";;
             *)   echo "::error::registry answered $code for $APP/manifests:live"; exit 1;;
           esac
           rm -rf "$work"
@@ -294,5 +298,5 @@ jobs:
             echo "| **job start → live** | **$(d "$T_START" "$T_LIVE")** |"
             echo
             echo "Artifact: \`${ARTIFACT:-–}\`"
-            [ "$LIVE" = true ] || { echo; echo "**Published only**: no \`live\` tag yet, so the app isn't switched over and nothing was applied."; }
+            [ "$LIVE" = true ] || { echo; echo "**Published only**: no \`live\` tag, or \`live\` parked, so the app isn't switched over and nothing was applied."; }
           } >> "$GITHUB_STEP_SUMMARY"
