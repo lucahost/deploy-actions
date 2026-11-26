@@ -26,7 +26,10 @@ spec:
             app: {{ $j.component }}
         spec:
           restartPolicy: Never
-          {{- include "vps.pod" (dict "uid" $c.uid "gid" ($c.gid | default $c.uid)) | nindent 10 }}
+          {{- include "vps.pod" (dict "uid" $c.uid "gid" ($c.gid | default $c.uid) "fsGroup" (ternary ($c.gid | default $c.uid) 0 (not (empty $c.secretFiles)))) | nindent 10 }}
+          {{- if $c.init }}
+          shareProcessNamespace: true
+          {{- end }}
           containers:
             - name: {{ $name }}
               image: {{ include "vps.image" (dict "root" $root "spec" $c "key" $j.component) }}
@@ -46,11 +49,18 @@ spec:
                 {{- range $v, $p := $c.volumes }}
                 - {name: v-{{ $v }}, mountPath: {{ $p }}}
                 {{- end }}
+                {{- range $s, $p := $c.secretFiles }}
+                - {name: s-{{ $s }}, mountPath: {{ $p }}, readOnly: true}
+                {{- end }}
           volumes:
             - name: tmp
               emptyDir: {sizeLimit: 256Mi}
             {{- range $v, $p := $c.volumes }}
             - name: v-{{ $v }}
               persistentVolumeClaim: {claimName: {{ $v }}}
+            {{- end }}
+            {{- range $s, $p := $c.secretFiles }}
+            - name: s-{{ $s }}
+              secret: {secretName: {{ $s }}, defaultMode: 288}   # 0440
             {{- end }}
 {{- end }}

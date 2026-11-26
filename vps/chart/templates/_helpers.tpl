@@ -7,6 +7,9 @@ securityContext:
   runAsNonRoot: true
   runAsUser: {{ .uid }}
   runAsGroup: {{ .gid | default .uid }}
+  {{- with .fsGroup }}
+  fsGroup: {{ . }}
+  {{- end }}
   seccompProfile:
     type: RuntimeDefault
 {{- end }}

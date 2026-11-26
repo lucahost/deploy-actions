@@ -113,6 +113,12 @@ for k in 'readOnlyRootFilesystem: true' 'allowPrivilegeEscalation: false' 'runAs
   [ "$(grep -c "$k" "$W/built.yaml")" -ge "$expect_pods" ] && ok "$k everywhere" || fail "$k missing somewhere"
 done
 grep -q 'name: demo-env-' "$W/built.yaml" && grep -q 'JWT_SECRET:' "$W/built.yaml" && ok "secretGenerator: Secret demo-env-<hash>, its key, the references rewritten" || fail "no generated Secret"
+grep -q 'secretName: demo-certs-' "$W/built.yaml" && [ "$(grep -c 'mountPath: /app/certs, readOnly: true' "$W/built.yaml")" = 2 ] \
+  && [ "$(grep -c 'secretName: demo-certs-[a-z0-9]*, defaultMode: 288' "$W/built.yaml")" = 2 ] \
+  && ok "secretFiles: Secret demo-certs-<hash> read-only at /app/certs, 0440, in api and its cron" || fail "secretFiles: $(grep -n 'demo-certs' "$W/built.yaml" | head -4)"
+[ "$(grep -c 'fsGroup: 1654' "$W/built.yaml")" = 2 ] && ok "… with fsGroup = api's gid (1654), only where secretFiles are" || fail "fsGroup: $(grep -c fsGroup "$W/built.yaml")"
+[ "$(grep -c 'shareProcessNamespace: true' "$W/built.yaml")" = 3 ] && ok "init: true → shareProcessNamespace in api and its cron (postgres has it anyway)" \
+  || fail "shareProcessNamespace: $(grep -c 'shareProcessNamespace: true' "$W/built.yaml")"
 
 info "a parked app (vps-gitops As built 21): live is the parked artifact, a deploy only publishes"
 # What `vps` does on a rollback or reset, as vps-cutover: an empty kustomization annotated parked,

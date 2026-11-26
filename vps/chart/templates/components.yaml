@@ -27,7 +27,12 @@ spec:
       labels:
         app: {{ $name }}
     spec:
-      {{- include "vps.pod" (dict "uid" $uid "gid" $gid) | nindent 6 }}
+      {{- /* secretFiles: the Secret's files are root:<fsGroup> 0440, so the component's group reads them */}}
+      {{- include "vps.pod" (dict "uid" $uid "gid" $gid "fsGroup" (ternary $gid 0 (not (empty $c.secretFiles)))) | nindent 6 }}
+      {{- if $c.init }}
+      # init: pause is PID 1 and reaps orphans (compose's init: true); the app's process isn't PID 1.
+      shareProcessNamespace: true
+      {{- end }}
       {{- with $c.migrate }}
       initContainers:
         - name: migrate
@@ -96,6 +101,9 @@ spec:
             {{- range $v, $p := $c.volumes }}
             - {name: v-{{ $v }}, mountPath: {{ $p }}}
             {{- end }}
+            {{- range $s, $p := $c.secretFiles }}
+            - {name: s-{{ $s }}, mountPath: {{ $p }}, readOnly: true}
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {sizeLimit: 256Mi}
@@ -106,6 +114,10 @@ spec:
         {{- range $v, $p := $c.volumes }}
         - name: v-{{ $v }}
           persistentVolumeClaim: {claimName: {{ $v }}}
+        {{- end }}
+        {{- range $s, $p := $c.secretFiles }}
+        - name: s-{{ $s }}   # deploy/secrets/{{ $s }}/<KEY>: one file per key
+          secret: {secretName: {{ $s }}, defaultMode: 288}   # 0440
         {{- end }}
 {{- if $c.port }}
 ---
