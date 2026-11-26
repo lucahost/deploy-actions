@@ -113,9 +113,25 @@ for k in 'readOnlyRootFilesystem: true' 'allowPrivilegeEscalation: false' 'runAs
   [ "$(grep -c "$k" "$W/built.yaml")" -ge "$expect_pods" ] && ok "$k everywhere" || fail "$k missing somewhere"
 done
 grep -q 'name: demo-env-' "$W/built.yaml" && grep -q 'JWT_SECRET:' "$W/built.yaml" && ok "secretGenerator: Secret demo-env-<hash>, its key, the references rewritten" || fail "no generated Secret"
-grep -q 'secretName: demo-certs-' "$W/built.yaml" && [ "$(grep -c 'mountPath: /app/certs, readOnly: true' "$W/built.yaml")" = 2 ] \
-  && [ "$(grep -c 'secretName: demo-certs-[a-z0-9]*, defaultMode: 288' "$W/built.yaml")" = 2 ] \
-  && ok "secretFiles: Secret demo-certs-<hash> read-only at /app/certs, 0440, in api and its cron" || fail "secretFiles: $(grep -n 'demo-certs' "$W/built.yaml" | head -4)"
+# Read from the built objects (kustomize rewrites the chart's flow mappings as blocks):
+# "<kind>/<name> <volume's secretName> <defaultMode> <mountPath> <readOnly>" per secretFiles volume.
+sf=$(python3 -I - "$W/built.yaml" <<'PY'
+import sys, yaml
+for d in yaml.safe_load_all(open(sys.argv[1])):
+    if not d or d.get("kind") not in ("Deployment", "CronJob"):
+        continue
+    t = d["spec"]["template"] if d["kind"] == "Deployment" else d["spec"]["jobTemplate"]["spec"]["template"]
+    vols = {v["name"]: v for v in t["spec"].get("volumes", [])}
+    for c in t["spec"]["containers"]:
+        for m in c.get("volumeMounts", []):
+            s = vols.get(m["name"], {}).get("secret")
+            if s:
+                print(d["kind"] + "/" + d["metadata"]["name"], s["secretName"].rsplit("-", 1)[0], s.get("defaultMode"), m["mountPath"], m.get("readOnly"))
+PY
+)
+expect_sf=$'Deployment/api demo-certs 288 /app/certs True\nCronJob/cleanup demo-certs 288 /app/certs True'
+[ "$sf" = "$expect_sf" ] && grep -q 'secretName: demo-certs-' "$W/built.yaml" \
+  && ok "secretFiles: Secret demo-certs-<hash> read-only at /app/certs, 0440, in api and its cron" || fail "secretFiles: $sf"
 [ "$(grep -c 'fsGroup: 1654' "$W/built.yaml")" = 2 ] && ok "… with fsGroup = api's gid (1654), only where secretFiles are" || fail "fsGroup: $(grep -c fsGroup "$W/built.yaml")"
 [ "$(grep -c 'shareProcessNamespace: true' "$W/built.yaml")" = 3 ] && ok "init: true → shareProcessNamespace in api and its cron (postgres has it anyway)" \
   || fail "shareProcessNamespace: $(grep -c 'shareProcessNamespace: true' "$W/built.yaml")"
