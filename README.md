@@ -66,8 +66,11 @@ besides that Environment's, since `inherit` would carry them too.
     (compose's `init: true`; a .NET host as PID 1 can hang after a fatal start).
   - `postgres.args: ["-c shared_buffers=256MB", …]`: the server's tuning settings, as `-c` arguments.
     The schema allows only memory, WAL and checkpoint, planner-cost, parallelism, autovacuum and
-    slow-query-log settings, with plain values (a number with a unit, `on`, `off`). It never
-    allows `listen_addresses`, hba or ssl, preload libraries, or any other flag. Each name once.
+    logging settings (`log_connections`, `log_disconnections`, `log_lock_waits`, `log_statement`,
+    `log_min_duration_statement`, `log_line_prefix`), each with plain values. It never allows
+    `listen_addresses`, hba or ssl, preload libraries, or any other flag. Each name once.
+  - `serviceAccount: true`: the component's pods run as ServiceAccount `<component>`, which the
+    tenant entry creates (vps-gitops `rbac:`), with its token mounted. All others get no token.
 - **`vps-deploy-selftest.yml`** runs the step scripts, the render and the pack against a local
   registry and a fake Flux.
 - **`tailscale-identity-check.yml`** (manual) proves the identity refuses everything but this

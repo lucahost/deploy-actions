@@ -57,6 +57,7 @@
           "volumes": {"type": "object", "propertyNames": {"$ref": "#/definitions/name"}, "additionalProperties": {"$ref": "#/definitions/path"}},
           "secretFiles": {"type": "object", "propertyNames": {"$ref": "#/definitions/name"}, "additionalProperties": {"$ref": "#/definitions/path"}},
           "init": {"type": "boolean"},
+          "serviceAccount": {"type": "boolean", "description": "true: the pods run as ServiceAccount <component> (the tenant's, tenantgen rbac) with its token mounted"},
           "replicas": {"type": "integer", "minimum": 0, "maximum": 3},
           "strategy": {"enum": ["RollingUpdate", "Recreate"]},
           "migrate": {
@@ -103,9 +104,9 @@
         "secret": {"$ref": "#/definitions/name"},
         "fresh": {"type": "boolean"},
         "args": {
-          "description": "-c <name>=<value> for the server: tuning settings only (memory, WAL and checkpoints, planner costs, parallelism, autovacuum, slow-query logging). Never listen_addresses, hba, ssl, preload libraries or any other flag.",
+          "description": "-c <name>=<value> for the server: tuning settings only (memory, WAL and checkpoints, planner costs, parallelism, autovacuum, logging: log_connections, log_disconnections, log_lock_waits, log_statement, log_min_duration_statement, log_line_prefix). Never listen_addresses, hba, ssl, preload libraries or any other flag.",
           "type": "array", "maxItems": 30,
-          "items": {"type": "string", "pattern": "^-c (shared_buffers|effective_cache_size|maintenance_work_mem|work_mem|temp_buffers|wal_buffers|min_wal_size|max_wal_size|checkpoint_completion_target|checkpoint_timeout|random_page_cost|seq_page_cost|effective_io_concurrency|default_statistics_target|jit|max_connections|max_worker_processes|max_parallel_workers|max_parallel_workers_per_gather|max_parallel_maintenance_workers|autovacuum_naptime|autovacuum_vacuum_scale_factor|autovacuum_analyze_scale_factor|autovacuum_vacuum_cost_limit|log_min_duration_statement)=([0-9]+(\\.[0-9]+)?(B|kB|MB|GB|TB|us|ms|s|min|h|d)?|on|off)$"}
+          "items": {"type": "string", "anyOf": [{"pattern": "^-c (shared_buffers|effective_cache_size|maintenance_work_mem|work_mem|temp_buffers|wal_buffers|min_wal_size|max_wal_size|checkpoint_completion_target|checkpoint_timeout|random_page_cost|seq_page_cost|effective_io_concurrency|default_statistics_target|jit|max_connections|max_worker_processes|max_parallel_workers|max_parallel_workers_per_gather|max_parallel_maintenance_workers|autovacuum_naptime|autovacuum_vacuum_scale_factor|autovacuum_analyze_scale_factor|autovacuum_vacuum_cost_limit|log_min_duration_statement)=([0-9]+(\\.[0-9]+)?(B|kB|MB|GB|TB|us|ms|s|min|h|d)?|on|off)$"}, {"pattern": "^-c (log_connections|log_disconnections|log_lock_waits)=(on|off)$"}, {"pattern": "^-c log_statement=(none|ddl|mod|all)$"}, {"pattern": "^-c log_min_duration_statement=-1$"}, {"pattern": "^-c log_line_prefix=[A-Za-z0-9%_.:@\\[\\]<>()= -]{1,64}$"}]}
         },
         "backup": {
           "type": "object", "additionalProperties": false, "required": ["schedule"],
