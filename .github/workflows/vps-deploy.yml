@@ -29,6 +29,13 @@ on:
         required: false
         type: string
         default: vps.yaml
+      per-app-secrets:
+        description: >-
+          A repo with several apps (vps/<app>.yaml) keeps each app's two secrets in its one Environment vps
+          as VPS_REGISTRY_PASSWORD_<APP> and VPS_RECEIVER_TOKEN_<APP> (APP in upper case, - as _)
+        required: false
+        type: boolean
+        default: false
       wait-seconds:
         description: How long Flux may take to apply the artifact and get the workloads healthy
         required: false
@@ -59,6 +66,7 @@ jobs:
       artifact: ${{ steps.publish.outputs.artifact }}
     env:
       FILE: ${{ inputs.file }}
+      PER_APP_SECRETS: ${{ inputs.per-app-secrets }}
       SHA: ${{ github.sha }}
       SOURCE_REPO: ${{ github.repository }}
       RUN_ID: ${{ github.run_id }}
@@ -80,18 +88,29 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: The secrets' names (per app in a repo with several)
+        id: names
+        run: |
+          [ -f "$FILE" ] || { echo "::error::no $FILE in this repo"; exit 1; }
+          app=$(yq -r '.app // ""' "$FILE")
+          [[ "$app" =~ ^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$ ]] || { echo "::error::$FILE: bad or missing app '$app'"; exit 1; }
+          sfx=""; if [ "${PER_APP_SECRETS:-false}" = true ]; then sfx=_$(tr 'a-z-' 'A-Z_' <<<"$app"); fi
+          echo "secrets: VPS_REGISTRY_PASSWORD$sfx, VPS_RECEIVER_TOKEN$sfx"
+          echo "suffix=$sfx" >> "$GITHUB_OUTPUT"
+
       - name: Check inputs and secrets
         id: check
         env:
-          SET_VPS_REGISTRY_PASSWORD: ${{ secrets.VPS_REGISTRY_PASSWORD != '' }}
-          SET_VPS_RECEIVER_TOKEN: ${{ secrets.VPS_RECEIVER_TOKEN != '' }}
+          SET_VPS_REGISTRY_PASSWORD: ${{ secrets[format('VPS_REGISTRY_PASSWORD{0}', steps.names.outputs.suffix)] != '' }}
+          SET_VPS_RECEIVER_TOKEN: ${{ secrets[format('VPS_RECEIVER_TOKEN{0}', steps.names.outputs.suffix)] != '' }}
+          SECRET_SUFFIX: ${{ steps.names.outputs.suffix }}
         run: |
           [ -f "$FILE" ] || { echo "::error::no $FILE in this repo"; exit 1; }
           app=$(yq -r '.app // ""' "$FILE")
           [[ "$app" =~ ^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$ ]] || { echo "::error::$FILE: bad or missing app '$app'"; exit 1; }
           missing=""
           for v in VPS_REGISTRY_PASSWORD VPS_RECEIVER_TOKEN; do
-            set_var="SET_$v"; [ "${!set_var:-}" = true ] || missing+=" $v"
+            set_var="SET_$v"; [ "${!set_var:-}" = true ] || missing+=" $v${SECRET_SUFFIX:-}"
           done
           [ -z "$missing" ] || { echo "::error::empty in this job:$missing (Environment vps of this repo, passed with secrets: inherit; vps-onboard sets them)"; exit 1; }
           [ -n "$TS_OIDC_CLIENT_ID" ] && [ -n "$TS_OIDC_AUDIENCE" ] || [ "${VPS_DEPLOY_SELFTEST:-}" = 1 ] \
@@ -163,7 +182,7 @@ jobs:
         env:
           APP: ${{ steps.check.outputs.app }}
           NAMES: ${{ steps.build.outputs.names }}
-          VPS_REGISTRY_PASSWORD: ${{ secrets.VPS_REGISTRY_PASSWORD }}
+          VPS_REGISTRY_PASSWORD: ${{ secrets[format('VPS_REGISTRY_PASSWORD{0}', steps.names.outputs.suffix)] }}
           REGISTRY_SCHEME: https
         run: |
           command -v skopeo >/dev/null || sudo NEEDRESTART_MODE=l DEBIAN_FRONTEND=noninteractive apt-get install -y skopeo >/dev/null
@@ -191,7 +210,7 @@ jobs:
         id: render
         # The chart and scripts of the deploy-actions commit below. test/vps-deploy/structure.py checks that
         # vps/ at that commit is vps/ at this file's commit (bump both together).
-        uses: lucahost/deploy-actions/vps@981ec57cfda6c469a7ed076870d71dcf7e053c53 # vps render and pack
+        uses: lucahost/deploy-actions/vps@84528ffaa519e8622f7db3bd8fa20d6f008536ae # vps render and pack
         with:
           file: ${{ inputs.file }}
           images: ${{ steps.push.outputs.images }}
@@ -202,7 +221,7 @@ jobs:
         id: publish
         env:
           APP: ${{ steps.check.outputs.app }}
-          VPS_REGISTRY_PASSWORD: ${{ secrets.VPS_REGISTRY_PASSWORD }}
+          VPS_REGISTRY_PASSWORD: ${{ secrets[format('VPS_REGISTRY_PASSWORD{0}', steps.names.outputs.suffix)] }}
           FLUX_INSECURE: ""
         run: |
           work=$(mktemp -d)
@@ -253,7 +272,7 @@ jobs:
         if: ${{ steps.publish.outputs.live == 'true' }}
         env:
           APP: ${{ steps.check.outputs.app }}
-          VPS_RECEIVER_TOKEN: ${{ secrets.VPS_RECEIVER_TOKEN }}
+          VPS_RECEIVER_TOKEN: ${{ secrets[format('VPS_RECEIVER_TOKEN{0}', steps.names.outputs.suffix)] }}
         run: |
           work=$(mktemp -d)
           ( umask 077; printf '%s' "$VPS_RECEIVER_TOKEN" > "$work/key" )

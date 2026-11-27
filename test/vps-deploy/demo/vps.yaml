@@ -30,5 +30,5 @@ cron:
 postgres:
   image: docker.io/library/postgres:19@sha256:4ae330eb888b3b769aa542424859059d8e37507e365d3d48024446dacd8c4d8d
   memory: 1Gi
-  args: ["-c shared_buffers=128MB", "-c random_page_cost=1.1"]
+  args: ["-c shared_buffers=128MB", "-c random_page_cost=1.1", "-c log_statement=ddl"]
   backup: {schedule: "45 2 * * *"}

@@ -1,6 +1,12 @@
 {{/* The secure defaults every pod gets. Not values: vps.yaml can't change them. */}}
 {{- define "vps.pod" -}}
+{{- if .sa }}
+# serviceAccount: true: the component's own ServiceAccount (the tenant's: tenantgen rbac) and its token
+serviceAccountName: {{ .sa }}
+automountServiceAccountToken: true
+{{- else }}
 automountServiceAccountToken: false
+{{- end }}
 enableServiceLinks: false
 hostUsers: false
 securityContext:
