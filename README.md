@@ -1,8 +1,10 @@
 # deploy-actions
 
-Shared GitHub Actions for deploying to the Hetzner VPS: apps into its k3s cluster
-(`vps-deploy.yml`, Onboarding v2 of [lucahost/vps-gitops](https://github.com/lucahost/vps-gitops))
-and static `*.hostettler.io` sites (`deploy-static.yml`).
+Shared GitHub Actions for deploying to the Hetzner VPS: apps, static sites included, into its k3s
+cluster (`vps-deploy.yml`, Onboarding v2 of [lucahost/vps-gitops](https://github.com/lucahost/vps-gitops)).
+`deploy-static.yml` and `scripts/bootstrap-secrets.sh` (rsync over Tailscale SSH as the deploy user
+dp-ubuntu-16gb) are gone: no repo used them since the sites moved into the cluster, and the deploy
+user is retired (vps-gitops, docs/design.md "Retiring dp-ubuntu-16gb", As built 26).
 
 ## `vps-deploy.yml` (reusable): an app into the VPS cluster
 
@@ -101,34 +103,6 @@ Actions minutes are the owner's own and limited; a job is billed in whole minute
 - Batch commits and push once per review round; no WIP pushes. Run ShellCheck and
   `python3 -I test/vps-deploy/structure.py .github/workflows/vps-deploy.yml .` locally first.
 - Throwaway probe workflows on branches cost minutes too: delete the branch when the probe is done.
-
-## `deploy-static.yml` (reusable)
-
-Joins the tailnet via Tailscale and `rsync`s the calling repo's root to the VPS
-webroot, with Cloudflare cache-busting of `assets/*` URLs. The VPS Tailscale IP
-(`100.102.93.2`) and SSH user (`dp-ubuntu-16gb`) are baked in — the same for
-every site — so callers only supply their domain + webroot and inherit the two
-Tailscale OAuth secrets.
-
-Caller example:
-
-```yaml
-jobs:
-  deploy:
-    uses: lucahost/deploy-actions/.github/workflows/deploy-static.yml@main
-    with:
-      domain: move.hostettler.io
-      deploy_path: /var/www/move.hostettler.io
-    secrets: inherit
-```
-
-## `scripts/bootstrap-secrets.sh`
-
-Sets `TS_OAUTH_CLIENT_ID` + `TS_OAUTH_SECRET` on a new site repo in one run:
-
-```bash
-./scripts/bootstrap-secrets.sh lucahost/<repo>
-```
 
 ## `renovate/default.json5` (shared Renovate preset)
 
