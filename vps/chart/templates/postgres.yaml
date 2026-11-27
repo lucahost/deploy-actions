@@ -77,9 +77,12 @@ spec:
             - name: postgres
               containerPort: 5432
           {{- include "vps.container" . | nindent 10 }}
+          {{- /* memoryRequest: what the scheduler reserves, Burstable when below the limit. The node's
+                 pods may request about 8 GiB in all; Guaranteed 1–2 GiB per database didn't fit
+                 (fantasy-brrr, 2026-11-27), while a database uses a fraction of it. Default: .memory. */}}
           resources:
-            requests: {cpu: {{ .cpu | default "100m" }}, memory: {{ .memory }}}
-            limits: {memory: {{ .memory }}}          # Guaranteed memory, as every database
+            requests: {cpu: {{ .cpu | default "100m" }}, memory: {{ .memoryRequest | default .memory }}}
+            limits: {memory: {{ .memory }}}
           readinessProbe:
             exec:
               command: ["sh", "-c", 'exec pg_isready -q -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"']
