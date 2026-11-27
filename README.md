@@ -69,6 +69,11 @@ besides that Environment's, since `inherit` would carry them too.
     logging settings (`log_connections`, `log_disconnections`, `log_lock_waits`, `log_statement`,
     `log_min_duration_statement`, `log_line_prefix`), each with plain values. It never allows
     `listen_addresses`, hba or ssl, preload libraries, or any other flag. Each name once.
+  - `postgres.memoryRequest` and `redis.memoryRequest` (default: their `memory`): what the scheduler
+    reserves. Below `memory` the database is Burstable, with the limit still `memory`. The VPS's
+    pods may request about 8 GiB in all, and Guaranteed 1–2 GiB per database didn't fit
+    (fantasy-brrr, 2026-11-27) while the databases use a fraction of it. Set it near what the
+    database uses. Render refuses any request above its limit.
   - `serviceAccount: true`: the component's pods run as ServiceAccount `<component>`, which the
     tenant entry creates (vps-gitops `rbac:`), with its token mounted. All others get no token.
 - **`vps-deploy-selftest.yml`** runs the step scripts, the render and the pack against a local

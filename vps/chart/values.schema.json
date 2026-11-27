@@ -98,6 +98,7 @@
         "image": {"$ref": "#/definitions/pinned"},
         "uid": {"type": "integer", "minimum": 1},
         "memory": {"$ref": "#/definitions/quantity"},
+        "memoryRequest": {"$ref": "#/definitions/quantity", "description": "the request (the scheduler's reservation); default memory (Guaranteed). Below it: Burstable, the limit stays memory"},
         "cpu": {"$ref": "#/definitions/quantity"},
         "mountPath": {"$ref": "#/definitions/path"},
         "pgdata": {"$ref": "#/definitions/path"},
@@ -126,6 +127,7 @@
         "uid": {"type": "integer", "minimum": 1},
         "gid": {"type": "integer", "minimum": 1},
         "memory": {"$ref": "#/definitions/quantity"},
+        "memoryRequest": {"$ref": "#/definitions/quantity", "description": "the request (the scheduler's reservation); default memory (Guaranteed). Below it: Burstable, the limit stays memory"},
         "args": {"$ref": "#/definitions/strings"},
         "secretEnv": {"type": "array", "items": {"$ref": "#/definitions/name"}}
       }
