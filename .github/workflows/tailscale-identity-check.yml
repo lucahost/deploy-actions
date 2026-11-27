@@ -52,7 +52,7 @@ jobs:
           sub=$(base64 -d <<<"$p" 2>/dev/null | jq -r '.sub // empty')
           case "$sub" in
             repo:lucahost/*) sfx="";;
-            repo:lucahost@*) sfx=_IMMUTABLE;;
+            repo:lucahost@5907956/*) sfx=_IMMUTABLE;;   # as vps-deploy.yml's identity step
             *) echo "::error::unexpected OIDC subject '$sub'"; exit 1;;
           esac
           id=$(yq -r ".jobs.deploy.env.TS_OIDC_CLIENT_ID$sfx" "$f")

@@ -208,6 +208,33 @@ else fail "render with serviceAccount: $(tail -2 "$W/sa.log")"; fi
 expect_sfx() { [ "$(cd "$APP_DIR" && PER_APP_SECRETS=$1 FILE=$2 run_step names >/dev/null && out names suffix)" = "$3" ]; }
 expect_sfx false vps.yaml "" && expect_sfx true vps.yaml _DEMO && ok "secrets' names: plain by default, VPS_*_DEMO with per-app-secrets" \
   || fail "the per-app suffix: $(cd "$APP_DIR" && PER_APP_SECRETS=true run_step names; out names suffix)"
+# The Tailscale identity by the job's own OIDC subject (the identity step, with a token from a file):
+# repo:lucahost/… joins with the first pair, an immutable subject (repos created after 2026-07-15)
+# with the _IMMUTABLE pair; anything else, or the second pair empty, fails.
+wfenv() { python3 -I -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["jobs"]["deploy"]["env"][sys.argv[2]])' "$WF" "$1"; }
+ID1=$(wfenv TS_OIDC_CLIENT_ID); AUD1=$(wfenv TS_OIDC_AUDIENCE); ID2=$(wfenv TS_OIDC_CLIENT_ID_IMMUTABLE); AUD2=$(wfenv TS_OIDC_AUDIENCE_IMMUTABLE)
+pick() {  # $1 = the token's sub, then NAME=value overrides. Prints "<client-id> <audience>"
+  local sub=$1; shift
+  printf '{"value":"e30.%s.sig"}' "$(printf '{"sub":"%s"}' "$sub" | base64 -w0 | tr '+/' '-_' | tr -d '=')" > "$W/oidc.json"
+  ( export ACTIONS_ID_TOKEN_REQUEST_URL="file://$W/oidc.json?api-version=2.0" ACTIONS_ID_TOKEN_REQUEST_TOKEN=selftest \
+      TS_OIDC_CLIENT_ID="$ID1" TS_OIDC_AUDIENCE="$AUD1" TS_OIDC_CLIENT_ID_IMMUTABLE="$ID2" TS_OIDC_AUDIENCE_IMMUTABLE="$AUD2"
+    for kv in "$@"; do export "${kv?}"; done
+    run_step identity ) > "$W/identity.err" 2>&1 || return 1
+  echo "$(out identity client-id) $(out identity audience)"
+}
+if [ -n "$ID2" ] && [ "$ID2" != "$ID1" ] && [ "$AUD1" = "api.tailscale.com/$ID1" ] && [ "$AUD2" = "api.tailscale.com/$ID2" ]; then
+  ok "two Tailscale identities, each audience api.tailscale.com/<its client id>"
+else fail "the TS_OIDC_* pairs: $ID1 $AUD1 / $ID2 $AUD2"; fi
+got=$(pick "repo:lucahost/biergit:environment:vps")
+[ "$got" = "$ID1 $AUD1" ] && ok "repo:lucahost/biergit:… → the first identity" || fail "repo:lucahost/…: '$got' $(cat "$W/identity.err")"
+got=$(pick "repo:lucahost@5907956/luna-eats@1103562918:environment:vps")
+[ "$got" = "$ID2 $AUD2" ] && ok "repo:lucahost@5907956/luna-eats@…:… (immutable) → the _IMMUTABLE identity" || fail "immutable sub: '$got' $(cat "$W/identity.err")"
+for s in "repo:lucahost@1234567/x@1:environment:vps" "repo:someone/x:environment:vps" ""; do
+  if got=$(pick "$s"); then fail "sub '$s' picked $got"
+  else grep -q "unexpected OIDC subject" "$W/identity.err" && ok "sub '${s:-(none)}' is refused" || fail "sub '$s': $(cat "$W/identity.err")"; fi
+done
+if got=$(pick "repo:lucahost@5907956/luna-eats@1103562918:environment:vps" TS_OIDC_CLIENT_ID_IMMUTABLE=""); then fail "an immutable sub picked '$got' without the second identity"
+else grep -q "no second Tailscale identity yet" "$W/identity.err" && ok "without the _IMMUTABLE pair an immutable sub fails clearly" || fail "empty _IMMUTABLE: $(cat "$W/identity.err")"; fi
 # postgres.args: tuning settings only, each name once
 pgbase='app: demo\ncomponents:\n  web: {build: {context: web}, uid: 101, memory: 64Mi}\npostgres:\n  image: docker.io/library/postgres:19@sha256:4ae330eb888b3b769aa542424859059d8e37507e365d3d48024446dacd8c4d8d\n  memory: 256Mi\n'
 for c in "listen:-c listen_addresses=*:does not match pattern" "preload:-c shared_preload_libraries=pg_stat_statements:does not match pattern" \

@@ -76,11 +76,12 @@ jobs:
       # The federated identities of docs/design.md (owner's one-time step 1); not secrets. GitHub gives
       # repos created after 2026-07-15 an immutable OIDC subject (repo:lucahost@<owner id>/<repo>@<repo
       # id>:…), which subject repo:lucahost/* doesn't match: those join with the second identity
-      # (subject repo:lucahost@5907956/*, the same claims). The job picks by its own token's sub.
+      # (subject repo:lucahost@5907956/*, the same claims; created 2026-11-27). The job picks by its
+      # own token's sub (test/vps-deploy/selftest.sh checks the pick).
       TS_OIDC_CLIENT_ID: TMABUofcLG11CNTRL-ktb1epw53B11CNTRL
       TS_OIDC_AUDIENCE: api.tailscale.com/TMABUofcLG11CNTRL-ktb1epw53B11CNTRL
-      TS_OIDC_CLIENT_ID_IMMUTABLE: ""
-      TS_OIDC_AUDIENCE_IMMUTABLE: ""
+      TS_OIDC_CLIENT_ID_IMMUTABLE: TMABUofcLG11CNTRL-kYuNJx7eqA21CNTRL
+      TS_OIDC_AUDIENCE_IMMUTABLE: api.tailscale.com/TMABUofcLG11CNTRL-kYuNJx7eqA21CNTRL
       FLUX_VERSION: 2.9.6
       FLUX_SHA256: b4d22673e9246cbd628881f1a9ef3b090085dced291e42d804555cee8e8d42c5   # linux_amd64.tar.gz
     steps:
@@ -153,7 +154,8 @@ jobs:
           sub=$(base64 -d <<<"$p" 2>/dev/null | jq -r '.sub // empty')
           case "$sub" in
             repo:lucahost/*) id=$TS_OIDC_CLIENT_ID; aud=$TS_OIDC_AUDIENCE;;
-            repo:lucahost@*)
+            # lucahost's owner id: the second identity's subject is repo:lucahost@5907956/*
+            repo:lucahost@5907956/*)
               id=$TS_OIDC_CLIENT_ID_IMMUTABLE; aud=$TS_OIDC_AUDIENCE_IMMUTABLE
               [ -n "$id" ] && [ -n "$aud" ] \
                 || { echo "::error::this repo's OIDC subject is immutable ($sub): vps-deploy.yml has no second Tailscale identity yet (TS_OIDC_*_IMMUTABLE, the owner's step)"; exit 1; };;
