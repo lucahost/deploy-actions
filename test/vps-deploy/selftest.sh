@@ -221,7 +221,7 @@ done
 # memoryRequest (postgres, redis): the request below the limit (Burstable); above it, render refuses
 mr() {  # $1 = postgres memoryRequest, $2 = redis memoryRequest, $3 = out file
   printf "${pgbase}  memoryRequest: %s\nredis:\n  image: docker.io/library/redis:8@sha256:%s\n  memory: 256Mi\n  memoryRequest: %s\n" "$1" "$(printf '%064d' 0)" "$2" > "$3.yaml"
-  bash "$ROOT/vps/render.sh" "$3.yaml" "$W/images.json" x "$3" > "$3.log" 2>&1
+  YQ=${YQ:-yq} bash "$ROOT/vps/render.sh" "$3.yaml" "$W/images.json" x "$3" > "$3.log" 2>&1
 }
 if mr 64Mi 32Mi "$W/mr-ok"; then
   got=$(python3 -I -c 'import sys, yaml
@@ -233,6 +233,11 @@ for d in yaml.safe_load_all(open(sys.argv[1])):
 else fail "render with memoryRequest: $(tail -2 "$W/mr-ok.log")"; fi
 if mr 512Mi 32Mi "$W/mr-over"; then fail "render took a memoryRequest above memory"
 else grep -q "memory request 512Mi above its limit 256Mi" "$W/mr-over.log" && ok "render refuses a memoryRequest above memory (the pod would be refused)" || fail "memoryRequest above: $(tail -2 "$W/mr-over.log")"; fi
+# …the same without yq (the VPS has none): python3's PyYAML reads the render back
+if ! YQ=no-yq-here mr 64Mi 32Mi "$W/mr-noyq-ok"; then fail "render without yq: $(tail -2 "$W/mr-noyq-ok.log")"
+elif YQ=no-yq-here mr 512Mi 32Mi "$W/mr-noyq-over"; then fail "render without yq took a memoryRequest above memory"
+else grep -q "memory request 512Mi above its limit 256Mi" "$W/mr-noyq-over.log" && ok "without yq (python3's PyYAML): render passes 64Mi and refuses 512Mi above 256Mi" \
+  || fail "memoryRequest above, without yq: $(tail -2 "$W/mr-noyq-over.log")"; fi
 
 echo
 if [ "$FAILED" -ne 0 ]; then echo "!! vps-deploy self-test FAILED"; exit 1; fi
