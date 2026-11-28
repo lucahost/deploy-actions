@@ -57,7 +57,7 @@ jobs:
     permissions:
       contents: read
       id-token: write          # the OIDC token Tailscale's workload identity checks
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     concurrency:
       group: vps-deploy-${{ github.repository }}-${{ inputs.file }}

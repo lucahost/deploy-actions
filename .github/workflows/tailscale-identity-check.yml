@@ -31,7 +31,7 @@ permissions:
 
 jobs:
   identity:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     outputs:
       client-id: ${{ steps.read.outputs.client-id }}
       audience: ${{ steps.read.outputs.audience }}
@@ -64,7 +64,7 @@ jobs:
   # The token has no environment claim.
   no-environment:
     needs: identity
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     outputs:
       joined: ${{ steps.join.outcome == 'success' }}
     steps:
@@ -79,7 +79,7 @@ jobs:
   # Environment vps (on main), but this file's own step: job_workflow_ref isn't vps-deploy.yml.
   own-workflow:
     needs: identity
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     environment: vps
     outputs:
       joined: ${{ steps.join.outcome == 'success' }}
@@ -99,7 +99,7 @@ jobs:
   verdict:
     needs: [no-environment, own-workflow]
     if: always()
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       actions: read
     steps:
